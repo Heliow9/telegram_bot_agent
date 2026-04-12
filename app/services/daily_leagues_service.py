@@ -1,13 +1,14 @@
-from datetime import datetime
 from typing import List, Dict
 from app.constants import LEAGUES
 from app.services.sportsdb_api import SportsDBAPI
 from app.services.analysis_service import AnalysisService
 from app.services.event_selector import (
+    get_upcoming_events,
     filter_morning_events,
     filter_afternoon_events,
     filter_events_starting_in_30_minutes,
 )
+from app.services.time_utils import now_local
 
 
 class DailyLeaguesService:
@@ -16,46 +17,54 @@ class DailyLeaguesService:
         self.analysis_service = AnalysisService()
 
     def _today(self) -> str:
-        return datetime.now().strftime("%Y-%m-%d")
+        # usa o mesmo fuso do projeto (Recife)
+        return now_local().strftime("%Y-%m-%d")
+
+    def _sorted_leagues(self) -> List[Dict]:
+        return sorted(LEAGUES, key=lambda x: x["priority"])
 
     def _events_for_league_today(self, league_meta: Dict) -> List[Dict]:
-        return self.api.get_events_by_day_list(
-            self._today(),
-            league_meta["name"],
-        )
+        try:
+            return self.api.get_events_by_day_list(
+                self._today(),
+                league_meta["name"],
+            )
+        except Exception as e:
+            print(f"[DAILY] Erro ao buscar jogos da liga {league_meta['display_name']}: {e}")
+            return []
+
+    def _build_payloads_for_filtered_events(self, filter_func) -> List[Dict]:
+        payloads = []
+
+        for league_meta in self._sorted_leagues():
+            try:
+                events = self._events_for_league_today(league_meta)
+                selected = filter_func(events)
+
+                analyses = self.analysis_service.build_many_analyses(
+                    selected,
+                    league_meta
+                )
+                payloads.extend(analyses)
+
+            except Exception as e:
+                print(f"[DAILY] Erro processando liga {league_meta['display_name']}: {e}")
+                continue
+
+        return self.analysis_service.sort_by_best_picks(payloads)
+
+    def get_all_today_payloads(self) -> List[Dict]:
+        # todos os jogos futuros do dia
+        return self._build_payloads_for_filtered_events(get_upcoming_events)
 
     def get_morning_payloads(self) -> List[Dict]:
-        payloads = []
-
-        for league_meta in sorted(LEAGUES, key=lambda x: x["priority"]):
-            events = self._events_for_league_today(league_meta)
-            selected = filter_morning_events(events)
-            payloads.extend(
-                self.analysis_service.build_many_analyses(selected, league_meta)
-            )
-
-        return self.analysis_service.sort_by_best_picks(payloads)
+        return self._build_payloads_for_filtered_events(filter_morning_events)
 
     def get_afternoon_payloads(self) -> List[Dict]:
-        payloads = []
-
-        for league_meta in sorted(LEAGUES, key=lambda x: x["priority"]):
-            events = self._events_for_league_today(league_meta)
-            selected = filter_afternoon_events(events)
-            payloads.extend(
-                self.analysis_service.build_many_analyses(selected, league_meta)
-            )
-
-        return self.analysis_service.sort_by_best_picks(payloads)
+        return self._build_payloads_for_filtered_events(filter_afternoon_events)
 
     def get_30min_payloads(self) -> List[Dict]:
-        payloads = []
+        def _filter(events):
+            return filter_events_starting_in_30_minutes(events, tolerance_minutes=5)
 
-        for league_meta in sorted(LEAGUES, key=lambda x: x["priority"]):
-            events = self._events_for_league_today(league_meta)
-            selected = filter_events_starting_in_30_minutes(events, tolerance_minutes=5)
-            payloads.extend(
-                self.analysis_service.build_many_analyses(selected, league_meta)
-            )
-
-        return self.analysis_service.sort_by_best_picks(payloads)
+        return self._build_payloads_for_filtered_events(_filter)
