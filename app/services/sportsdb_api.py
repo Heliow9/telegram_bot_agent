@@ -205,3 +205,115 @@ class SportsDBAPI:
         events = self.get_team_last_events_list(team_id)
         filtered = [event for event in events if event.get("strAwayTeam") == team_name]
         return filtered[:limit]
+    
+    
+        # =============================
+    # RESULTS / FINISHED EVENTS
+    # =============================
+    def get_event_result(self, event_id: str) -> Optional[Dict[str, Any]]:
+        event = self.get_event_details(event_id)
+        if not event:
+            return None
+
+        status_text = (event.get("strStatus") or "").strip().upper()
+        home_score = event.get("intHomeScore")
+        away_score = event.get("intAwayScore")
+
+        # Só considera finalizado se o status indicar fim de jogo
+        finished_statuses = {"FT", "AET", "PEN", "FULL TIME", "MATCH FINISHED"}
+
+        is_finished = status_text in finished_statuses
+
+        if home_score is None or away_score is None:
+            return {
+                "fixture_id": event_id,
+                "finished": False,
+                "home_score": None,
+                "away_score": None,
+                "result": None,
+                "status_text": status_text,
+            }
+
+        try:
+            home_score = int(home_score)
+            away_score = int(away_score)
+        except (TypeError, ValueError):
+            return {
+                "fixture_id": event_id,
+                "finished": False,
+                "home_score": None,
+                "away_score": None,
+                "result": None,
+                "status_text": status_text,
+            }
+
+        if not is_finished:
+            return {
+                "fixture_id": event_id,
+                "finished": False,
+                "home_score": home_score,
+                "away_score": away_score,
+                "result": None,
+                "status_text": status_text,
+            }
+
+        if home_score > away_score:
+            result = "1"
+        elif home_score < away_score:
+            result = "2"
+        else:
+            result = "X"
+
+        return {
+            "fixture_id": event_id,
+            "finished": True,
+            "home_score": home_score,
+            "away_score": away_score,
+            "result": result,
+            "status_text": status_text,
+        }
+        event = self.get_event_details(event_id)
+        if not event:
+            return None
+
+        home_score = event.get("intHomeScore")
+        away_score = event.get("intAwayScore")
+
+        if home_score is None or away_score is None:
+            return {
+                "fixture_id": event_id,
+                "finished": False,
+                "home_score": None,
+                "away_score": None,
+                "result": None,
+                "status_text": event.get("strStatus"),
+            }
+
+        try:
+            home_score = int(home_score)
+            away_score = int(away_score)
+        except (TypeError, ValueError):
+            return {
+                "fixture_id": event_id,
+                "finished": False,
+                "home_score": None,
+                "away_score": None,
+                "result": None,
+                "status_text": event.get("strStatus"),
+            }
+
+        if home_score > away_score:
+            result = "1"
+        elif home_score < away_score:
+            result = "2"
+        else:
+            result = "X"
+
+        return {
+            "fixture_id": event_id,
+            "finished": True,
+            "home_score": home_score,
+            "away_score": away_score,
+            "result": result,
+            "status_text": event.get("strStatus"),
+        }

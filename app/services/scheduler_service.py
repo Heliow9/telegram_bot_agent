@@ -1,57 +1,70 @@
 from apscheduler.schedulers.background import BackgroundScheduler
 from pathlib import Path
-from datetime import datetime
 import json
 
 from app.services.daily_leagues_service import DailyLeaguesService
 from app.services.telegram_service import TelegramService
 from app.services.message_formatter import format_prediction_message
 from app.services.time_utils import now_local
+from app.services.result_checker_service import ResultCheckerService
 
 
 scheduler = BackgroundScheduler(timezone="America/Recife")
 daily_service = DailyLeaguesService()
 telegram = TelegramService()
+result_checker = ResultCheckerService()
 
 scheduler_started = False
 
 ALERT_STORE_PATH = Path("data/sent_alerts.json")
+RESULT_STORE_PATH = Path("data/sent_results.json")
 
 
-def _ensure_alert_store():
-    ALERT_STORE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    if not ALERT_STORE_PATH.exists():
-        ALERT_STORE_PATH.write_text("[]", encoding="utf-8")
+def _ensure_json_store(path: Path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not path.exists():
+        path.write_text("[]", encoding="utf-8")
 
 
-def _load_sent_alerts():
-    _ensure_alert_store()
+def _load_json_list(path: Path):
+    _ensure_json_store(path)
     try:
-        return json.loads(ALERT_STORE_PATH.read_text(encoding="utf-8"))
+        return json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
         return []
+
+
+def _save_json_list(path: Path, data):
+    _ensure_json_store(path)
+    path.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+# =============================
+# ALERTAS PRÉ-JOGO
+# =============================
+def _load_sent_alerts():
+    return _load_json_list(ALERT_STORE_PATH)
 
 
 def _save_sent_alert(alert_key: str):
     alerts = _load_sent_alerts()
     if alert_key not in alerts:
         alerts.append(alert_key)
-        ALERT_STORE_PATH.write_text(
-            json.dumps(alerts, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        _save_json_list(ALERT_STORE_PATH, alerts)
 
 
-def _already_sent(alert_key: str) -> bool:
+def _already_sent_alert(alert_key: str) -> bool:
     alerts = _load_sent_alerts()
     return alert_key in alerts
 
 
 def job_check_games():
-    print(f"[SCHEDULER] Rodando verificação: {now_local()}")
+    print(f"[SCHEDULER] Rodando verificação pré-jogo: {now_local()}")
 
     try:
-        # agora usa o método certo: só jogos na faixa dos 30 min
         payloads = daily_service.get_30min_payloads()
         print(f"[SCHEDULER] Jogos encontrados na janela dos 30 min: {len(payloads)}")
     except Exception as e:
@@ -75,8 +88,8 @@ def job_check_games():
 
             alert_key = f"{fixture_id}_30min"
 
-            if _already_sent(alert_key):
-                print(f"[SCHEDULER] Já enviado antes: {home_team} x {away_team}")
+            if _already_sent_alert(alert_key):
+                print(f"[SCHEDULER] Alerta já enviado: {home_team} x {away_team}")
                 continue
 
             message = format_prediction_message(payload)
@@ -84,12 +97,83 @@ def job_check_games():
 
             if result.get("ok"):
                 _save_sent_alert(alert_key)
-                print(f"[SCHEDULER] Enviado com sucesso: {home_team} x {away_team}")
+                print(f"[SCHEDULER] Pré-jogo enviado com sucesso: {home_team} x {away_team}")
             else:
                 print(f"[SCHEDULER] Falha no envio Telegram: {result}")
 
         except Exception as e:
-            print(f"[SCHEDULER] Erro no jogo: {e}")
+            print(f"[SCHEDULER] Erro no envio pré-jogo: {e}")
+
+
+# =============================
+# RESULTADOS PÓS-JOGO
+# =============================
+def _load_sent_results():
+    return _load_json_list(RESULT_STORE_PATH)
+
+
+def _save_sent_result(result_key: str):
+    sent = _load_sent_results()
+    if result_key not in sent:
+        sent.append(result_key)
+        _save_json_list(RESULT_STORE_PATH, sent)
+
+
+def _already_sent_result(result_key: str) -> bool:
+    sent = _load_sent_results()
+    return result_key in sent
+
+
+def _format_result_message(item: dict) -> str:
+    status_emoji = "✅" if item.get("status") == "hit" else "❌"
+    status_label = "ACERTAMOS" if item.get("status") == "hit" else "ERRAMOS"
+
+    return (
+        f"{status_emoji} *{status_label}*\n\n"
+        f"⚽ *{item['home_team']} x {item['away_team']}*\n"
+        f"📌 Palpite: *{item['pick']}*\n"
+        f"🏁 Resultado real: *{item['real_result']}*\n"
+        f"📊 Placar: *{item['home_score']} x {item['away_score']}*"
+    )
+
+
+def job_check_results():
+    print(f"[SCHEDULER] Rodando verificação de resultados: {now_local()}")
+
+    try:
+        updates = result_checker.check_pending_predictions()
+        print(f"[SCHEDULER] Resultados finalizados encontrados: {len(updates)}")
+    except Exception as e:
+        print(f"[SCHEDULER] Erro ao checar resultados: {e}")
+        return
+
+    if not updates:
+        print("[SCHEDULER] Nenhum resultado novo para enviar.")
+        return
+
+    for item in updates:
+        try:
+            fixture_id = str(item.get("fixture_id", ""))
+            result_key = f"{fixture_id}_result"
+
+            if _already_sent_result(result_key):
+                print(f"[SCHEDULER] Resultado já enviado: {fixture_id}")
+                continue
+
+            message = _format_result_message(item)
+            result = telegram.send_message(message)
+
+            if result.get("ok"):
+                _save_sent_result(result_key)
+                print(
+                    f"[SCHEDULER] Resultado enviado: "
+                    f"{item['home_team']} x {item['away_team']} | {item['status']}"
+                )
+            else:
+                print(f"[SCHEDULER] Falha ao enviar resultado: {result}")
+
+        except Exception as e:
+            print(f"[SCHEDULER] Erro no envio de resultado: {e}")
 
 
 def start_scheduler():
@@ -99,7 +183,6 @@ def start_scheduler():
         print("[SCHEDULER] Já iniciado, ignorando nova inicialização.")
         return
 
-    # job recorrente
     scheduler.add_job(
         job_check_games,
         "interval",
@@ -110,10 +193,22 @@ def start_scheduler():
         coalesce=True,
     )
 
+    scheduler.add_job(
+        job_check_results,
+        "interval",
+        minutes=10,
+        id="job_check_results",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+
     scheduler.start()
     scheduler_started = True
     print("[SCHEDULER] Iniciado com sucesso.")
 
-    # executa imediatamente ao subir a aplicação
-    print("[SCHEDULER] Executando primeira verificação imediata...")
+    print("[SCHEDULER] Executando primeira verificação imediata de pré-jogo...")
     job_check_games()
+
+    print("[SCHEDULER] Executando primeira verificação imediata de resultados...")
+    job_check_results()
