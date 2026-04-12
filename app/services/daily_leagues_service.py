@@ -17,7 +17,7 @@ class DailyLeaguesService:
         self.analysis_service = AnalysisService()
 
     def _today(self) -> str:
-        # usa o mesmo fuso do projeto (Recife)
+        # usa o mesmo fuso do projeto
         return now_local().strftime("%Y-%m-%d")
 
     def _sorted_leagues(self) -> List[Dict]:
@@ -54,17 +54,32 @@ class DailyLeaguesService:
         return self.analysis_service.sort_by_best_picks(payloads)
 
     def get_all_today_payloads(self) -> List[Dict]:
-        # todos os jogos futuros do dia
+        """
+        Todos os jogos futuros do dia.
+        """
         return self._build_payloads_for_filtered_events(get_upcoming_events)
 
     def get_morning_payloads(self) -> List[Dict]:
+        """
+        Jogos futuros da manhã.
+        """
         return self._build_payloads_for_filtered_events(filter_morning_events)
 
     def get_afternoon_payloads(self) -> List[Dict]:
+        """
+        Jogos futuros da tarde/noite.
+        """
         return self._build_payloads_for_filtered_events(filter_afternoon_events)
 
     def get_30min_payloads(self) -> List[Dict]:
+        """
+        Jogos que ainda não começaram e faltam até 30 minutos.
+        Isso permite recuperar alertas mesmo se o servidor subir atrasado.
+        """
         def _filter(events):
-            return filter_events_starting_in_30_minutes(events, tolerance_minutes=5)
+            return filter_events_starting_in_30_minutes(
+                events,
+                max_minutes=30,
+            )
 
         return self._build_payloads_for_filtered_events(_filter)

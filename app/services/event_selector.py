@@ -1,4 +1,3 @@
-from datetime import datetime, timedelta
 from typing import List, Dict, Optional
 from app.services.time_utils import event_to_local_datetime, now_local
 
@@ -22,9 +21,10 @@ def get_upcoming_events(events: List[Dict]) -> List[Dict]:
     upcoming.sort(
         key=lambda e: event_to_local_datetime(
             e.get("dateEvent", ""),
-            e.get("strTime", "")
+            e.get("strTime", ""),
         ) or now
     )
+
     return upcoming
 
 
@@ -67,22 +67,41 @@ def filter_afternoon_events(events: List[Dict]) -> List[Dict]:
     return filtered
 
 
-def filter_events_starting_in_30_minutes(events: List[Dict], tolerance_minutes: int = 5) -> List[Dict]:
+def filter_events_starting_in_30_minutes(
+    events: List[Dict],
+    max_minutes: int = 30,
+) -> List[Dict]:
+    """
+    Retorna jogos que:
+    - ainda não começaram
+    - faltam até 30 minutos para iniciar
+
+    Exemplo:
+    Se o servidor sobe às 17:44 e o jogo é 18:00,
+    esse jogo entra porque faltam 16 minutos.
+    """
     now = now_local()
     filtered = []
 
-    for event in get_upcoming_events(events):
+    for event in events:
         dt_local = event_to_local_datetime(
             event.get("dateEvent", ""),
             event.get("strTime", ""),
         )
+
         if dt_local is None:
             continue
 
-        diff = dt_local - now
-        diff_minutes = diff.total_seconds() / 60
+        diff_minutes = (dt_local - now).total_seconds() / 60
 
-        if 30 - tolerance_minutes <= diff_minutes <= 30 + tolerance_minutes:
+        if 0 < diff_minutes <= max_minutes:
             filtered.append(event)
+
+    filtered.sort(
+        key=lambda e: event_to_local_datetime(
+            e.get("dateEvent", ""),
+            e.get("strTime", ""),
+        ) or now
+    )
 
     return filtered
