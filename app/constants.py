@@ -3,16 +3,16 @@ LEAGUES = [
         "key": "br_a",
         "name": "Brazilian Serie A",
         "display_name": "Brasileirão Série A",
-        "id": "4331",
-        "season": "2026",
+        "id": "4351",
+        "season": "2025",
         "priority": 1,
     },
     {
         "key": "br_b",
         "name": "Brazilian Serie B",
         "display_name": "Brasileirão Série B",
-        "id": "4394",
-        "season": "2026",
+        "id": "4404",
+        "season": "2025",
         "priority": 2,
     },
     {
@@ -23,14 +23,11 @@ LEAGUES = [
         "season": "2025-2026",
         "priority": 1,
     },
-
-    # 🔥 NOVAS LIGAS
-
     {
         "key": "arg",
         "name": "Argentinian Primera Division",
         "display_name": "Argentina Liga Profesional",
-        "id": "4355",
+        "id": "4406",
         "season": "2026",
         "priority": 2,
     },

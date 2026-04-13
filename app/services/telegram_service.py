@@ -16,6 +16,7 @@ class TelegramService:
             "chat_id": self.chat_id,
             "text": text,
             "parse_mode": "Markdown",
+            "disable_web_page_preview": True,
         }
 
         response = requests.post(url, json=payload, timeout=20)

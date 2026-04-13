@@ -48,8 +48,12 @@ def save_prediction(payload: dict):
         "result": None,
         "home_score": None,
         "away_score": None,
-        "status": "pending",   # pending | hit | miss
+        "status": "pending",
         "checked_at": None,
+        "features": payload["analysis"].get("features"),
+        "model_source": payload["analysis"].get("model_source"),
+        "odds": payload["analysis"].get("odds"),
+        "value_bet": payload["analysis"].get("value_bet"),
     }
 
     already_exists = any(item.get("fixture_id") == record["fixture_id"] for item in data)

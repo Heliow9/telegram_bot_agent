@@ -2,6 +2,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from pathlib import Path
 import json
 
+from app.config import settings
 from app.services.daily_leagues_service import DailyLeaguesService
 from app.services.telegram_service import TelegramService
 from app.services.message_formatter import (
@@ -16,6 +17,7 @@ from app.services.message_formatter import (
 from app.services.time_utils import now_local
 from app.services.result_checker_service import ResultCheckerService
 from app.services.gemini_summary_service import GeminiSummaryService
+from app.services.live_match_monitor_service import LiveMatchMonitorService
 
 
 scheduler = BackgroundScheduler(timezone="America/Recife")
@@ -23,6 +25,7 @@ daily_service = DailyLeaguesService()
 telegram = TelegramService()
 result_checker = ResultCheckerService()
 gemini_summary = GeminiSummaryService()
+live_monitor = LiveMatchMonitorService()
 
 scheduler_started = False
 
@@ -282,6 +285,18 @@ def job_check_results():
             print(f"[SCHEDULER] Erro no envio de resultado: {e}")
 
 
+def job_monitor_live_matches():
+    if not settings.live_monitor_enabled:
+        print("[LIVE] Monitor live desabilitado por configuração.")
+        return
+
+    print(f"[LIVE] Rodando monitor live: {now_local()}")
+    try:
+        live_monitor.monitor_live_matches()
+    except Exception as e:
+        print(f"[LIVE] Erro geral no monitor live: {e}")
+
+
 def start_scheduler():
     global scheduler_started
 
@@ -331,6 +346,16 @@ def start_scheduler():
         coalesce=True,
     )
 
+    scheduler.add_job(
+        job_monitor_live_matches,
+        "interval",
+        seconds=settings.live_monitor_interval_seconds,
+        id="job_monitor_live_matches",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+
     scheduler.start()
     scheduler_started = True
     print("[SCHEDULER] Iniciado com sucesso.")
@@ -340,3 +365,6 @@ def start_scheduler():
 
     print("[SCHEDULER] Executando primeira verificação imediata de resultados...")
     job_check_results()
+
+    print("[SCHEDULER] Executando primeira verificação imediata de live...")
+    job_monitor_live_matches()

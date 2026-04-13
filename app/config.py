@@ -20,6 +20,12 @@ class Settings(BaseModel):
         "https://www.thesportsdb.com/api/v1/json",
     )
 
+    football_api_key: str = os.getenv("FOOTBALL_API_KEY", "")
+    football_api_base_url: str = os.getenv(
+        "FOOTBALL_API_BASE_URL",
+        "https://v3.football.api-sports.io",
+    )
+
     timezone: str = os.getenv("TIMEZONE", "America/Recife")
 
     gemini_api_key: str = os.getenv("GEMINI_API_KEY", "")
@@ -27,6 +33,13 @@ class Settings(BaseModel):
 
     odds_api_key: str = os.getenv("ODDS_API_KEY", "")
     value_bet_edge: float = float(os.getenv("VALUE_BET_EDGE", "0.05"))
+
+    live_monitor_enabled: bool = os.getenv("LIVE_MONITOR_ENABLED", "true").lower() == "true"
+    live_monitor_interval_seconds: int = int(os.getenv("LIVE_MONITOR_INTERVAL_SECONDS", "60"))
+    live_minute_checkpoints: str = os.getenv("LIVE_MINUTE_CHECKPOINTS", "15,30,45,60,75")
+    live_signal_min_shots_diff: int = int(os.getenv("LIVE_SIGNAL_MIN_SHOTS_DIFF", "4"))
+    live_signal_min_on_target_diff: int = int(os.getenv("LIVE_SIGNAL_MIN_ON_TARGET_DIFF", "2"))
+    live_signal_min_possession_diff: int = int(os.getenv("LIVE_SIGNAL_MIN_POSSESSION_DIFF", "8"))
 
 
 settings = Settings()

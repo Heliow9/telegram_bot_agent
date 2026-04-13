@@ -17,32 +17,55 @@ class SportsDBAPI:
         retry_delay: float = 1.5,
     ) -> Dict[str, Any]:
         url = f"{self.base_url}/{self.api_key}/{endpoint.lstrip('/')}"
-
         last_error = None
 
         for attempt in range(1, retries + 1):
+            response = None
             try:
                 response = requests.get(url, params=params or {}, timeout=30)
 
                 if response.status_code in (429, 500, 502, 503, 504):
-                    last_error = f"{response.status_code} {response.reason}"
+                    body_preview = response.text[:300]
+                    last_error = f"{response.status_code} {response.reason} | body={body_preview}"
                     if attempt < retries:
                         time.sleep(retry_delay * attempt)
                         continue
 
                 response.raise_for_status()
 
-                data = response.json()
+                try:
+                    data = response.json()
+                except ValueError:
+                    body_preview = response.text[:300]
+                    return {
+                        "error": True,
+                        "message": f"Resposta inválida em {endpoint}",
+                        "details": body_preview,
+                        "events": [],
+                        "results": [],
+                        "event": [],
+                        "table": [],
+                    }
+
                 if not isinstance(data, dict):
                     return {"raw": data}
 
                 return data
 
             except requests.exceptions.RequestException as exc:
-                last_error = str(exc)
+                body_preview = ""
+                if response is not None:
+                    try:
+                        body_preview = response.text[:300]
+                    except Exception:
+                        body_preview = ""
+
+                last_error = f"{exc} | body={body_preview}"
                 if attempt < retries:
                     time.sleep(retry_delay * attempt)
                     continue
+
+        print(f"[SportsDBAPI] ERRO endpoint={endpoint} params={params} details={last_error}")
 
         return {
             "error": True,
@@ -123,6 +146,15 @@ class SportsDBAPI:
             },
         )
 
+    def events_by_season(self, league_id: str, season: str) -> Dict[str, Any]:
+        return self._get(
+            "eventsseason.php",
+            {
+                "id": league_id,
+                "s": season,
+            },
+        )
+
     def event_by_id(self, event_id: str) -> Dict[str, Any]:
         return self._get(
             "lookupevent.php",
@@ -177,6 +209,10 @@ class SportsDBAPI:
         data = self.last_events_by_league_id(league_id)
         return self.get_events_list(data)
 
+    def get_events_by_season_list(self, league_id: str, season: str) -> List[Dict[str, Any]]:
+        data = self.events_by_season(league_id, season)
+        return self.get_events_list(data)
+
     def get_team_last_events_list(self, team_id: str) -> List[Dict[str, Any]]:
         data = self.team_last_events(team_id)
         return self.get_events_list(data)
@@ -205,9 +241,8 @@ class SportsDBAPI:
         events = self.get_team_last_events_list(team_id)
         filtered = [event for event in events if event.get("strAwayTeam") == team_name]
         return filtered[:limit]
-    
-    
-        # =============================
+
+    # =============================
     # RESULTS / FINISHED EVENTS
     # =============================
     def get_event_result(self, event_id: str) -> Optional[Dict[str, Any]]:
@@ -219,8 +254,16 @@ class SportsDBAPI:
         home_score = event.get("intHomeScore")
         away_score = event.get("intAwayScore")
 
-        # Só considera finalizado se o status indicar fim de jogo
-        finished_statuses = {"FT", "AET", "PEN", "FULL TIME", "MATCH FINISHED"}
+        finished_statuses = {
+            "FT",
+            "AET",
+            "PEN",
+            "FULL TIME",
+            "MATCH FINISHED",
+            "AFTER EXTRA TIME",
+            "AFTER PENALTIES",
+            "FINISHED",
+        }
 
         is_finished = status_text in finished_statuses
 
@@ -271,49 +314,4 @@ class SportsDBAPI:
             "away_score": away_score,
             "result": result,
             "status_text": status_text,
-        }
-        event = self.get_event_details(event_id)
-        if not event:
-            return None
-
-        home_score = event.get("intHomeScore")
-        away_score = event.get("intAwayScore")
-
-        if home_score is None or away_score is None:
-            return {
-                "fixture_id": event_id,
-                "finished": False,
-                "home_score": None,
-                "away_score": None,
-                "result": None,
-                "status_text": event.get("strStatus"),
-            }
-
-        try:
-            home_score = int(home_score)
-            away_score = int(away_score)
-        except (TypeError, ValueError):
-            return {
-                "fixture_id": event_id,
-                "finished": False,
-                "home_score": None,
-                "away_score": None,
-                "result": None,
-                "status_text": event.get("strStatus"),
-            }
-
-        if home_score > away_score:
-            result = "1"
-        elif home_score < away_score:
-            result = "2"
-        else:
-            result = "X"
-
-        return {
-            "fixture_id": event_id,
-            "finished": True,
-            "home_score": home_score,
-            "away_score": away_score,
-            "result": result,
-            "status_text": event.get("strStatus"),
         }
