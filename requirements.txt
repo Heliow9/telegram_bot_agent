@@ -6,3 +6,4 @@ apscheduler
 pydantic
 httpx
 pytest
+google-genai

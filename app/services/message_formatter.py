@@ -143,7 +143,7 @@ def format_league_summary(league_name: str, payloads: list[dict]) -> str:
     return "\n".join(lines).strip()
 
 
-def format_result_message(item: dict) -> str:
+def format_result_message(item: dict, ai_summary: str | None = None) -> str:
     status = item.get("status")
     status_emoji = "✅" if status == "hit" else "❌"
     status_label = "ACERTAMOS" if status == "hit" else "ERRAMOS"
@@ -164,7 +164,7 @@ def format_result_message(item: dict) -> str:
     else:
         result_label = "Empate"
 
-    return "\n".join([
+    lines = [
         f"{status_emoji} *{status_label}*",
         "",
         f"🏆 *{league}*",
@@ -175,7 +175,16 @@ def format_result_message(item: dict) -> str:
         f"📌 *Palpite enviado:* {pick}",
         f"🎯 *Resultado real:* {real_result}",
         f"🔒 *Confiança do modelo:* {confidence}",
-    ])
+    ]
+
+    if ai_summary:
+        lines.extend([
+            "",
+            "🤖 *Resumo IA*",
+            ai_summary,
+        ])
+
+    return "\n".join(lines)
 
 
 def pick_winner_photo_url(item: dict) -> str | None:
