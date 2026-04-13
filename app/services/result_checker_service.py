@@ -44,15 +44,21 @@ class ResultCheckerService:
                 away_score=result_data["away_score"],
             )
 
+            event_details = self.api.get_event_details(fixture_id) or {}
+
             updates.append({
                 "fixture_id": fixture_id,
+                "league": item.get("league"),
                 "home_team": item.get("home_team"),
                 "away_team": item.get("away_team"),
                 "pick": item.get("pick"),
+                "confidence": item.get("confidence"),
                 "real_result": result_data["result"],
                 "home_score": result_data["home_score"],
                 "away_score": result_data["away_score"],
                 "status": "hit" if item.get("pick") == result_data["result"] else "miss",
+                "home_badge": event_details.get("strHomeTeamBadge"),
+                "away_badge": event_details.get("strAwayTeamBadge"),
             })
 
         return updates

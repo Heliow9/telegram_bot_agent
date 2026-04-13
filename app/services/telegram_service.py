@@ -21,3 +21,19 @@ class TelegramService:
         response = requests.post(url, json=payload, timeout=20)
         response.raise_for_status()
         return response.json()
+
+    def send_photo(self, photo_url: str, caption: str = "") -> dict:
+        if not self.bot_token or not self.chat_id:
+            return {"ok": False, "message": "Telegram não configurado"}
+
+        url = f"https://api.telegram.org/bot{self.bot_token}/sendPhoto"
+        payload = {
+            "chat_id": self.chat_id,
+            "photo": photo_url,
+            "caption": caption,
+            "parse_mode": "Markdown",
+        }
+
+        response = requests.post(url, json=payload, timeout=20)
+        response.raise_for_status()
+        return response.json()

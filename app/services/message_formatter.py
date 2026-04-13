@@ -141,3 +141,59 @@ def format_league_summary(league_name: str, payloads: list[dict]) -> str:
         lines.append("")
 
     return "\n".join(lines).strip()
+
+
+def format_result_message(item: dict) -> str:
+    status = item.get("status")
+    status_emoji = "✅" if status == "hit" else "❌"
+    status_label = "ACERTAMOS" if status == "hit" else "ERRAMOS"
+
+    confidence = item.get("confidence", "-")
+    league = item.get("league", "Jogo")
+    home_team = item.get("home_team", "Casa")
+    away_team = item.get("away_team", "Fora")
+    pick = item.get("pick", "-")
+    real_result = item.get("real_result", "-")
+    home_score = item.get("home_score", "-")
+    away_score = item.get("away_score", "-")
+
+    if real_result == "1":
+        result_label = f"{home_team} venceu"
+    elif real_result == "2":
+        result_label = f"{away_team} venceu"
+    else:
+        result_label = "Empate"
+
+    return "\n".join([
+        f"{status_emoji} *{status_label}*",
+        "",
+        f"🏆 *{league}*",
+        f"⚽ *{home_team} x {away_team}*",
+        f"📊 Placar final: *{home_score} x {away_score}*",
+        f"🏁 Resultado: *{result_label}*",
+        "",
+        f"📌 *Palpite enviado:* {pick}",
+        f"🎯 *Resultado real:* {real_result}",
+        f"🔒 *Confiança do modelo:* {confidence}",
+    ])
+
+
+def pick_winner_photo_url(item: dict) -> str | None:
+    """
+    Escolhe a imagem do vencedor.
+    Espera que o item possa ter:
+    - home_badge
+    - away_badge
+    """
+    real_result = item.get("real_result")
+    home_badge = item.get("home_badge")
+    away_badge = item.get("away_badge")
+
+    if real_result == "1" and home_badge:
+        return home_badge
+
+    if real_result == "2" and away_badge:
+        return away_badge
+
+    # empate: sem vencedor claro
+    return None

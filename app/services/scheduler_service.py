@@ -4,7 +4,11 @@ import json
 
 from app.services.daily_leagues_service import DailyLeaguesService
 from app.services.telegram_service import TelegramService
-from app.services.message_formatter import format_prediction_message
+from app.services.message_formatter import (
+    format_prediction_message,
+    format_result_message,
+    pick_winner_photo_url,
+)
 from app.services.time_utils import now_local
 from app.services.result_checker_service import ResultCheckerService
 
@@ -124,19 +128,6 @@ def _already_sent_result(result_key: str) -> bool:
     return result_key in sent
 
 
-def _format_result_message(item: dict) -> str:
-    status_emoji = "✅" if item.get("status") == "hit" else "❌"
-    status_label = "ACERTAMOS" if item.get("status") == "hit" else "ERRAMOS"
-
-    return (
-        f"{status_emoji} *{status_label}*\n\n"
-        f"⚽ *{item['home_team']} x {item['away_team']}*\n"
-        f"📌 Palpite: *{item['pick']}*\n"
-        f"🏁 Resultado real: *{item['real_result']}*\n"
-        f"📊 Placar: *{item['home_score']} x {item['away_score']}*"
-    )
-
-
 def job_check_results():
     print(f"[SCHEDULER] Rodando verificação de resultados: {now_local()}")
 
@@ -156,17 +147,31 @@ def job_check_results():
             fixture_id = str(item.get("fixture_id", ""))
             result_key = f"{fixture_id}_result"
 
+            print(
+                f"[SCHEDULER] Processando resultado | "
+                f"fixture={fixture_id} | "
+                f"{item.get('home_team')} x {item.get('away_team')} | "
+                f"status={item.get('status')}"
+            )
+
             if _already_sent_result(result_key):
-                print(f"[SCHEDULER] Resultado já enviado: {fixture_id}")
+                print(f"[SCHEDULER] Resultado já enviado anteriormente: {fixture_id}")
                 continue
 
-            message = _format_result_message(item)
-            result = telegram.send_message(message)
+            caption = format_result_message(item)
+            photo_url = pick_winner_photo_url(item)
+
+            if photo_url:
+                result = telegram.send_photo(photo_url, caption=caption)
+            else:
+                result = telegram.send_message(caption)
+
+            print(f"[SCHEDULER] Retorno Telegram: {result}")
 
             if result.get("ok"):
                 _save_sent_result(result_key)
                 print(
-                    f"[SCHEDULER] Resultado enviado: "
+                    f"[SCHEDULER] Resultado enviado com sucesso: "
                     f"{item['home_team']} x {item['away_team']} | {item['status']}"
                 )
             else:
