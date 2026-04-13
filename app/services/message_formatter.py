@@ -6,6 +6,9 @@ LEAGUE_EMOJIS = {
     "Brasileirão Série A": "🇧🇷",
     "Brasileirão Série B": "🇧🇷",
     "Premier League": "🏴",
+    "Argentina Liga Profesional": "🇦🇷",
+    "Itália Série A": "🇮🇹",
+    "Turquia Super Lig": "🇹🇷",
 }
 
 
@@ -16,6 +19,35 @@ def _time_only(date_value: str, time_value: str) -> str:
 
 def _league_emoji(league_name: str) -> str:
     return LEAGUE_EMOJIS.get(league_name, "🏆")
+
+
+def _confidence_label(confidence: str) -> str:
+    mapping = {
+        "alta": "Alta",
+        "média": "Média",
+        "baixa": "Baixa",
+    }
+    return mapping.get(str(confidence).lower(), str(confidence))
+
+
+def _pick_label(pick: str) -> str:
+    if pick == "1":
+        return "Casa"
+    if pick == "2":
+        return "Fora"
+    if pick == "X":
+        return "Empate"
+    return str(pick)
+
+
+def _result_label(real_result: str, home_team: str, away_team: str) -> str:
+    if real_result == "1":
+        return f"{home_team} venceu"
+    if real_result == "2":
+        return f"{away_team} venceu"
+    if real_result == "X":
+        return "Empate"
+    return str(real_result)
 
 
 def format_prediction_message(payload: dict) -> str:
@@ -30,29 +62,32 @@ def format_prediction_message(payload: dict) -> str:
     )
     local_time = local_time[:5] if local_time else "--:--"
 
+    home_team = fixture["home_team"]
+    away_team = fixture["away_team"]
+
     lines = [
-        "📊 *ANÁLISE 1X2*",
+        "📊 *ANÁLISE PRÉ-JOGO*",
         "",
-        f"{emoji} *{league_name.upper()}*",
-        f"⚽ *{fixture['home_team']} x {fixture['away_team']}*",
+        f"{emoji} *{league_name}*",
+        f"⚽ *{home_team} x {away_team}*",
         f"🕒 {local_date} • {local_time}",
         "",
     ]
 
     if analysis.get("home_rank") and analysis.get("away_rank"):
         lines.append(
-            f"📍 Tabela: *#{analysis['home_rank']}* vs *#{analysis['away_rank']}*"
+            f"📍 *Tabela:* #{analysis['home_rank']} vs #{analysis['away_rank']}"
         )
         lines.append("")
 
     lines.extend([
-        "*Probabilidades*",
+        "*Probabilidades 1X2*",
         f"• Casa: *{analysis['prob_home']:.0%}*",
         f"• Empate: *{analysis['prob_draw']:.0%}*",
         f"• Fora: *{analysis['prob_away']:.0%}*",
         "",
-        f"🎯 *Palpite:* {analysis['suggested_pick']}",
-        f"🔒 *Confiança:* {analysis['confidence']}",
+        f"🎯 *Palpite:* {_pick_label(analysis['suggested_pick'])} ({analysis['suggested_pick']})",
+        f"🔒 *Confiança:* {_confidence_label(analysis['confidence'])}",
     ])
 
     return "\n".join(lines)
@@ -65,21 +100,23 @@ def format_best_pick(payload: dict) -> str:
     emoji = _league_emoji(league_name)
 
     local_time = _time_only(fixture["date"], fixture["time"])
+    home_team = fixture["home_team"]
+    away_team = fixture["away_team"]
 
     return "\n".join([
         "🔥 *APOSTA MAIS FORTE DO DIA*",
         "",
         f"{emoji} *{league_name}*",
-        f"⚽ *{fixture['home_team']} x {fixture['away_team']}*",
+        f"⚽ *{home_team} x {away_team}*",
         f"🕒 {local_time}",
         "",
-        "*Probabilidades*",
+        "*Probabilidades 1X2*",
         f"• Casa: *{analysis['prob_home']:.0%}*",
         f"• Empate: *{analysis['prob_draw']:.0%}*",
         f"• Fora: *{analysis['prob_away']:.0%}*",
         "",
-        f"🎯 *Entrada sugerida:* {analysis['suggested_pick']}",
-        f"🔒 *Confiança:* {analysis['confidence']}",
+        f"🎯 *Entrada sugerida:* {_pick_label(analysis['suggested_pick'])} ({analysis['suggested_pick']})",
+        f"🔒 *Confiança:* {_confidence_label(analysis['confidence'])}",
     ])
 
 
@@ -96,12 +133,17 @@ def format_top_ranking(payloads: list[dict], top_n: int = 5) -> str:
         fixture = payload["fixture"]
         analysis = payload["analysis"]
         league_name = payload["league"]["display_name"]
+        emoji = _league_emoji(league_name)
         marker = medals[idx] if idx < len(medals) else f"{idx + 1}."
 
-        lines.append(f"{marker} *{fixture['home_team']} x {fixture['away_team']}*")
-        lines.append(f"{league_name} • {_time_only(fixture['date'], fixture['time'])}")
+        home_team = fixture["home_team"]
+        away_team = fixture["away_team"]
+
+        lines.append(f"{marker} *{home_team} x {away_team}*")
+        lines.append(f"{emoji} {league_name} • {_time_only(fixture['date'], fixture['time'])}")
         lines.append(
-            f"Palpite: *{analysis['suggested_pick']}* • Confiança: *{analysis['confidence']}*"
+            f"Palpite: *{_pick_label(analysis['suggested_pick'])}* • "
+            f"Confiança: *{_confidence_label(analysis['confidence'])}*"
         )
         lines.append("")
 
@@ -126,10 +168,14 @@ def format_league_summary(league_name: str, payloads: list[dict]) -> str:
         fixture = payload["fixture"]
         analysis = payload["analysis"]
 
-        lines.append(f"⚽ *{fixture['home_team']} x {fixture['away_team']}*")
+        home_team = fixture["home_team"]
+        away_team = fixture["away_team"]
+
+        lines.append(f"⚽ *{home_team} x {away_team}*")
         lines.append(f"🕒 {_time_only(fixture['date'], fixture['time'])}")
         lines.append(
-            f"🎯 *{analysis['suggested_pick']}* | 🔒 *{analysis['confidence']}*"
+            f"🎯 *{_pick_label(analysis['suggested_pick'])}* | "
+            f"🔒 *{_confidence_label(analysis['confidence'])}*"
         )
         lines.append(
             f"📈 {analysis['prob_home']:.0%} • {analysis['prob_draw']:.0%} • {analysis['prob_away']:.0%}"
@@ -157,31 +203,24 @@ def format_result_message(item: dict, ai_summary: str | None = None) -> str:
     home_score = item.get("home_score", "-")
     away_score = item.get("away_score", "-")
 
-    if real_result == "1":
-        result_label = f"{home_team} venceu"
-    elif real_result == "2":
-        result_label = f"{away_team} venceu"
-    else:
-        result_label = "Empate"
-
     lines = [
         f"{status_emoji} *{status_label}*",
         "",
         f"🏆 *{league}*",
         f"⚽ *{home_team} x {away_team}*",
-        f"📊 Placar final: *{home_score} x {away_score}*",
-        f"🏁 Resultado: *{result_label}*",
+        f"📊 *Placar final:* {home_score} x {away_score}",
+        f"🏁 *Resultado:* {_result_label(real_result, home_team, away_team)}",
         "",
-        f"📌 *Palpite enviado:* {pick}",
+        f"📌 *Palpite enviado:* {_pick_label(pick)} ({pick})",
         f"🎯 *Resultado real:* {real_result}",
-        f"🔒 *Confiança do modelo:* {confidence}",
+        f"🔒 *Confiança do modelo:* {_confidence_label(confidence)}",
     ]
 
     if ai_summary:
         lines.extend([
             "",
             "🤖 *Resumo IA*",
-            ai_summary,
+            ai_summary.strip(),
         ])
 
     return "\n".join(lines)

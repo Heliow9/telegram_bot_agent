@@ -8,20 +8,27 @@ from app.services.message_formatter import (
     format_prediction_message,
     format_result_message,
     pick_winner_photo_url,
+    format_best_pick,
+    format_top_ranking,
+    format_league_summary,
+    group_payloads_by_league,
 )
 from app.services.time_utils import now_local
 from app.services.result_checker_service import ResultCheckerService
+from app.services.gemini_summary_service import GeminiSummaryService
 
 
 scheduler = BackgroundScheduler(timezone="America/Recife")
 daily_service = DailyLeaguesService()
 telegram = TelegramService()
 result_checker = ResultCheckerService()
+gemini_summary = GeminiSummaryService()
 
 scheduler_started = False
 
 ALERT_STORE_PATH = Path("data/sent_alerts.json")
 RESULT_STORE_PATH = Path("data/sent_results.json")
+SUMMARY_STORE_PATH = Path("data/sent_summaries.json")
 
 
 def _ensure_json_store(path: Path):
@@ -47,7 +54,7 @@ def _save_json_list(path: Path, data):
 
 
 # =============================
-# ALERTAS PRÉ-JOGO
+# CONTROLE DE DUPLICIDADE
 # =============================
 def _load_sent_alerts():
     return _load_json_list(ALERT_STORE_PATH)
@@ -61,10 +68,128 @@ def _save_sent_alert(alert_key: str):
 
 
 def _already_sent_alert(alert_key: str) -> bool:
-    alerts = _load_sent_alerts()
-    return alert_key in alerts
+    return alert_key in _load_sent_alerts()
 
 
+def _load_sent_results():
+    return _load_json_list(RESULT_STORE_PATH)
+
+
+def _save_sent_result(result_key: str):
+    sent = _load_sent_results()
+    if result_key not in sent:
+        sent.append(result_key)
+        _save_json_list(RESULT_STORE_PATH, sent)
+
+
+def _already_sent_result(result_key: str) -> bool:
+    return result_key in _load_sent_results()
+
+
+def _load_sent_summaries():
+    return _load_json_list(SUMMARY_STORE_PATH)
+
+
+def _save_sent_summary(summary_key: str):
+    sent = _load_sent_summaries()
+    if summary_key not in sent:
+        sent.append(summary_key)
+        _save_json_list(SUMMARY_STORE_PATH, sent)
+
+
+def _already_sent_summary(summary_key: str) -> bool:
+    return summary_key in _load_sent_summaries()
+
+
+# =============================
+# RESUMOS DO DIA
+# =============================
+def _send_ranked_summary(payloads: list[dict], period_label: str):
+    if not payloads:
+        print(f"[SCHEDULER] Nenhum jogo para resumo de {period_label}.")
+        return
+
+    try:
+        best_result = telegram.send_message(format_best_pick(payloads[0]))
+        print(f"[SCHEDULER] Melhor aposta enviada ({period_label}): {best_result}")
+
+        ranking_result = telegram.send_message(format_top_ranking(payloads, top_n=5))
+        print(f"[SCHEDULER] Top ranking enviado ({period_label}): {ranking_result}")
+
+        grouped = group_payloads_by_league(payloads)
+
+        desired_order = [
+            "Brasileirão Série A",
+            "Brasileirão Série B",
+            "Premier League",
+            "Argentina Liga Profesional",
+            "Itália Série A",
+            "Turquia Super Lig",
+        ]
+
+        for league_name in desired_order:
+            league_payloads = grouped.get(league_name, [])
+            if not league_payloads:
+                continue
+
+            result = telegram.send_message(
+                format_league_summary(league_name, league_payloads)
+            )
+            print(f"[SCHEDULER] Resumo enviado para liga {league_name}: {result}")
+
+    except Exception as e:
+        print(f"[SCHEDULER] Erro ao enviar resumo {period_label}: {e}")
+
+
+def job_send_morning_summary():
+    print(f"[SCHEDULER] Rodando resumo da manhã: {now_local()}")
+
+    summary_key = f"{now_local().strftime('%Y-%m-%d')}_morning"
+    if _already_sent_summary(summary_key):
+        print("[SCHEDULER] Resumo da manhã já enviado hoje.")
+        return
+
+    try:
+        payloads = daily_service.get_morning_payloads()
+        print(f"[SCHEDULER] Jogos encontrados para manhã: {len(payloads)}")
+    except Exception as e:
+        print(f"[SCHEDULER] Erro ao buscar jogos da manhã: {e}")
+        return
+
+    if not payloads:
+        print("[SCHEDULER] Nenhum jogo da manhã para enviar.")
+        return
+
+    _send_ranked_summary(payloads, "manhã")
+    _save_sent_summary(summary_key)
+
+
+def job_send_afternoon_summary():
+    print(f"[SCHEDULER] Rodando resumo da tarde/noite: {now_local()}")
+
+    summary_key = f"{now_local().strftime('%Y-%m-%d')}_afternoon"
+    if _already_sent_summary(summary_key):
+        print("[SCHEDULER] Resumo da tarde/noite já enviado hoje.")
+        return
+
+    try:
+        payloads = daily_service.get_afternoon_payloads()
+        print(f"[SCHEDULER] Jogos encontrados para tarde/noite: {len(payloads)}")
+    except Exception as e:
+        print(f"[SCHEDULER] Erro ao buscar jogos da tarde/noite: {e}")
+        return
+
+    if not payloads:
+        print("[SCHEDULER] Nenhum jogo da tarde/noite para enviar.")
+        return
+
+    _send_ranked_summary(payloads, "tarde/noite")
+    _save_sent_summary(summary_key)
+
+
+# =============================
+# ALERTAS PRÉ-JOGO
+# =============================
 def job_check_games():
     print(f"[SCHEDULER] Rodando verificação pré-jogo: {now_local()}")
 
@@ -112,22 +237,6 @@ def job_check_games():
 # =============================
 # RESULTADOS PÓS-JOGO
 # =============================
-def _load_sent_results():
-    return _load_json_list(RESULT_STORE_PATH)
-
-
-def _save_sent_result(result_key: str):
-    sent = _load_sent_results()
-    if result_key not in sent:
-        sent.append(result_key)
-        _save_json_list(RESULT_STORE_PATH, sent)
-
-
-def _already_sent_result(result_key: str) -> bool:
-    sent = _load_sent_results()
-    return result_key in sent
-
-
 def job_check_results():
     print(f"[SCHEDULER] Rodando verificação de resultados: {now_local()}")
 
@@ -158,7 +267,8 @@ def job_check_results():
                 print(f"[SCHEDULER] Resultado já enviado anteriormente: {fixture_id}")
                 continue
 
-            caption = format_result_message(item)
+            ai_summary = gemini_summary.build_result_summary(item)
+            caption = format_result_message(item, ai_summary=ai_summary)
             photo_url = pick_winner_photo_url(item)
 
             if photo_url:
@@ -188,6 +298,31 @@ def start_scheduler():
         print("[SCHEDULER] Já iniciado, ignorando nova inicialização.")
         return
 
+    # resumo da manhã às 08:00
+    scheduler.add_job(
+        job_send_morning_summary,
+        "cron",
+        hour=8,
+        minute=0,
+        id="job_send_morning_summary",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+
+    # resumo da tarde/noite às 12:30
+    scheduler.add_job(
+        job_send_afternoon_summary,
+        "cron",
+        hour=12,
+        minute=30,
+        id="job_send_afternoon_summary",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+
+    # verificação pré-jogo
     scheduler.add_job(
         job_check_games,
         "interval",
@@ -198,6 +333,7 @@ def start_scheduler():
         coalesce=True,
     )
 
+    # verificação de resultados
     scheduler.add_job(
         job_check_results,
         "interval",
@@ -212,6 +348,7 @@ def start_scheduler():
     scheduler_started = True
     print("[SCHEDULER] Iniciado com sucesso.")
 
+    # execuções imediatas
     print("[SCHEDULER] Executando primeira verificação imediata de pré-jogo...")
     job_check_games()
 
