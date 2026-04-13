@@ -21,8 +21,12 @@ class Settings(BaseModel):
     )
 
     timezone: str = os.getenv("TIMEZONE", "America/Recife")
+
     gemini_api_key: str = os.getenv("GEMINI_API_KEY", "")
     gemini_model: str = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+
+    odds_api_key: str = os.getenv("ODDS_API_KEY", "")
+    value_bet_edge: float = float(os.getenv("VALUE_BET_EDGE", "0.05"))
 
 
 settings = Settings()

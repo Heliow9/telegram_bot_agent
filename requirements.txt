@@ -6,4 +6,8 @@ apscheduler
 pydantic
 httpx
 pytest
-google-genai
+google-genai  
+scikit-learn
+joblib
+pandas
+numpy

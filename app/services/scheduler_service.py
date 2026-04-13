@@ -53,9 +53,6 @@ def _save_json_list(path: Path, data):
     )
 
 
-# =============================
-# CONTROLE DE DUPLICIDADE
-# =============================
 def _load_sent_alerts():
     return _load_json_list(ALERT_STORE_PATH)
 
@@ -101,44 +98,33 @@ def _already_sent_summary(summary_key: str) -> bool:
     return summary_key in _load_sent_summaries()
 
 
-# =============================
-# RESUMOS DO DIA
-# =============================
 def _send_ranked_summary(payloads: list[dict], period_label: str):
-    if not payloads:
-        print(f"[SCHEDULER] Nenhum jogo para resumo de {period_label}.")
-        return
+    best_result = telegram.send_message(format_best_pick(payloads[0]))
+    print(f"[SCHEDULER] Melhor aposta enviada ({period_label}): {best_result}")
 
-    try:
-        best_result = telegram.send_message(format_best_pick(payloads[0]))
-        print(f"[SCHEDULER] Melhor aposta enviada ({period_label}): {best_result}")
+    ranking_result = telegram.send_message(format_top_ranking(payloads, top_n=5))
+    print(f"[SCHEDULER] Top ranking enviado ({period_label}): {ranking_result}")
 
-        ranking_result = telegram.send_message(format_top_ranking(payloads, top_n=5))
-        print(f"[SCHEDULER] Top ranking enviado ({period_label}): {ranking_result}")
+    grouped = group_payloads_by_league(payloads)
 
-        grouped = group_payloads_by_league(payloads)
+    desired_order = [
+        "Brasileirão Série A",
+        "Brasileirão Série B",
+        "Premier League",
+        "Argentina Liga Profesional",
+        "Itália Série A",
+        "Turquia Super Lig",
+    ]
 
-        desired_order = [
-            "Brasileirão Série A",
-            "Brasileirão Série B",
-            "Premier League",
-            "Argentina Liga Profesional",
-            "Itália Série A",
-            "Turquia Super Lig",
-        ]
+    for league_name in desired_order:
+        league_payloads = grouped.get(league_name, [])
+        if not league_payloads:
+            continue
 
-        for league_name in desired_order:
-            league_payloads = grouped.get(league_name, [])
-            if not league_payloads:
-                continue
-
-            result = telegram.send_message(
-                format_league_summary(league_name, league_payloads)
-            )
-            print(f"[SCHEDULER] Resumo enviado para liga {league_name}: {result}")
-
-    except Exception as e:
-        print(f"[SCHEDULER] Erro ao enviar resumo {period_label}: {e}")
+        result = telegram.send_message(
+            format_league_summary(league_name, league_payloads)
+        )
+        print(f"[SCHEDULER] Resumo enviado para liga {league_name}: {result}")
 
 
 def job_send_morning_summary():
@@ -157,11 +143,20 @@ def job_send_morning_summary():
         return
 
     if not payloads:
-        print("[SCHEDULER] Nenhum jogo da manhã para enviar.")
+        result = telegram.send_message(
+            "📭 *Nenhum jogo encontrado pela manhã hoje.*\n\n"
+            "Ligas monitoradas: Brasileirão A, Brasileirão B, Premier League, "
+            "Argentina Liga Profesional, Itália Série A e Turquia Super Lig."
+        )
+        print(f"[SCHEDULER] Aviso de manhã sem jogos enviado: {result}")
+        _save_sent_summary(summary_key)
         return
 
-    _send_ranked_summary(payloads, "manhã")
-    _save_sent_summary(summary_key)
+    try:
+        _send_ranked_summary(payloads, "manhã")
+        _save_sent_summary(summary_key)
+    except Exception as e:
+        print(f"[SCHEDULER] Erro ao enviar resumo da manhã: {e}")
 
 
 def job_send_afternoon_summary():
@@ -180,16 +175,22 @@ def job_send_afternoon_summary():
         return
 
     if not payloads:
-        print("[SCHEDULER] Nenhum jogo da tarde/noite para enviar.")
+        result = telegram.send_message(
+            "📭 *Nenhum jogo encontrado para a tarde/noite hoje.*\n\n"
+            "Ligas monitoradas: Brasileirão A, Brasileirão B, Premier League, "
+            "Argentina Liga Profesional, Itália Série A e Turquia Super Lig."
+        )
+        print(f"[SCHEDULER] Aviso de tarde/noite sem jogos enviado: {result}")
+        _save_sent_summary(summary_key)
         return
 
-    _send_ranked_summary(payloads, "tarde/noite")
-    _save_sent_summary(summary_key)
+    try:
+        _send_ranked_summary(payloads, "tarde/noite")
+        _save_sent_summary(summary_key)
+    except Exception as e:
+        print(f"[SCHEDULER] Erro ao enviar resumo da tarde/noite: {e}")
 
 
-# =============================
-# ALERTAS PRÉ-JOGO
-# =============================
 def job_check_games():
     print(f"[SCHEDULER] Rodando verificação pré-jogo: {now_local()}")
 
@@ -234,9 +235,6 @@ def job_check_games():
             print(f"[SCHEDULER] Erro no envio pré-jogo: {e}")
 
 
-# =============================
-# RESULTADOS PÓS-JOGO
-# =============================
 def job_check_results():
     print(f"[SCHEDULER] Rodando verificação de resultados: {now_local()}")
 
@@ -255,13 +253,6 @@ def job_check_results():
         try:
             fixture_id = str(item.get("fixture_id", ""))
             result_key = f"{fixture_id}_result"
-
-            print(
-                f"[SCHEDULER] Processando resultado | "
-                f"fixture={fixture_id} | "
-                f"{item.get('home_team')} x {item.get('away_team')} | "
-                f"status={item.get('status')}"
-            )
 
             if _already_sent_result(result_key):
                 print(f"[SCHEDULER] Resultado já enviado anteriormente: {fixture_id}")
@@ -298,7 +289,6 @@ def start_scheduler():
         print("[SCHEDULER] Já iniciado, ignorando nova inicialização.")
         return
 
-    # resumo da manhã às 08:00
     scheduler.add_job(
         job_send_morning_summary,
         "cron",
@@ -310,7 +300,6 @@ def start_scheduler():
         coalesce=True,
     )
 
-    # resumo da tarde/noite às 12:30
     scheduler.add_job(
         job_send_afternoon_summary,
         "cron",
@@ -322,7 +311,6 @@ def start_scheduler():
         coalesce=True,
     )
 
-    # verificação pré-jogo
     scheduler.add_job(
         job_check_games,
         "interval",
@@ -333,7 +321,6 @@ def start_scheduler():
         coalesce=True,
     )
 
-    # verificação de resultados
     scheduler.add_job(
         job_check_results,
         "interval",
@@ -348,7 +335,6 @@ def start_scheduler():
     scheduler_started = True
     print("[SCHEDULER] Iniciado com sucesso.")
 
-    # execuções imediatas
     print("[SCHEDULER] Executando primeira verificação imediata de pré-jogo...")
     job_check_games()
 
