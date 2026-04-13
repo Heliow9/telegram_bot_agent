@@ -286,10 +286,6 @@ def job_check_results():
 
 
 def job_monitor_live_matches():
-    if not settings.live_monitor_enabled:
-        print("[LIVE] Monitor live desabilitado por configuração.")
-        return
-
     print(f"[LIVE] Rodando monitor live: {now_local()}")
     try:
         live_monitor.monitor_live_matches()
@@ -349,7 +345,7 @@ def start_scheduler():
     scheduler.add_job(
         job_monitor_live_matches,
         "interval",
-        seconds=settings.live_monitor_interval_seconds,
+        minutes=3,
         id="job_monitor_live_matches",
         replace_existing=True,
         max_instances=1,

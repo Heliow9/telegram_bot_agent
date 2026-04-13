@@ -66,62 +66,45 @@ Regras:
 
     def build_live_goal_summary(self, item: dict) -> Optional[str]:
         prompt = f"""
-Você é um narrador analítico de apostas esportivas.
-Escreva uma mensagem curta e premium para Telegram, em português do Brasil.
+Você é um narrador analítico de futebol ao vivo.
+Escreva uma mensagem curta para Telegram, em português do Brasil.
 
 DADOS CONFIRMADOS:
 Liga: {item.get('league', 'Jogo')}
 Jogo: {item.get('home_team', 'Casa')} x {item.get('away_team', 'Fora')}
-Minuto: {item.get('minute', 'N/D')}
+Minuto/tempo: {item.get('match_clock', 'N/D')}
 Placar atual: {item.get('home_score', 0)} x {item.get('away_score', 0)}
-Time que marcou: {item.get('scoring_team', 'N/D')}
-Autor do gol: {item.get('scorer', 'não informado')}
-Posse casa: {item.get('home_possession', 'N/D')}
-Posse fora: {item.get('away_possession', 'N/D')}
-Finalizações casa: {item.get('home_shots', 'N/D')}
-Finalizações fora: {item.get('away_shots', 'N/D')}
-Finalizações no gol casa: {item.get('home_shots_on_target', 'N/D')}
-Finalizações no gol fora: {item.get('away_shots_on_target', 'N/D')}
+Status da partida: {item.get('status_text', 'N/D')}
+Time que marcou: {item.get('scoring_team', 'não identificado')}
 
 REGRAS:
-- Use só os dados informados.
-- Não invente assistência, drible, chute de fora, pressão específica ou jogada se isso não foi dado.
-- Se o autor do gol não estiver informado, não invente.
-- Máximo de 450 caracteres.
+- Use só os dados acima.
+- Não invente autor do gol, assistência, drible, pressão, posse ou estatísticas.
+- Máximo de 350 caracteres.
 - Não use markdown.
-- Tom natural, forte e objetivo.
+- Tom forte, natural e objetivo.
 """
         return self._generate(prompt)
 
     def build_live_checkpoint_summary(self, item: dict) -> Optional[str]:
         prompt = f"""
-Você é um analista de futebol ao vivo para apostas.
-Escreva um resumo claro e útil para Telegram, em português do Brasil.
+Você é um analista de futebol ao vivo.
+Gere uma atualização curta para Telegram, em português do Brasil.
 
 DADOS CONFIRMADOS:
 Liga: {item.get('league', 'Jogo')}
 Jogo: {item.get('home_team', 'Casa')} x {item.get('away_team', 'Fora')}
-Minuto: {item.get('minute', 'N/D')}
+Tempo de jogo: {item.get('match_clock', 'N/D')}
+Status: {item.get('status_text', 'N/D')}
 Placar: {item.get('home_score', 0)} x {item.get('away_score', 0)}
-Posse casa: {item.get('home_possession', 'N/D')}
-Posse fora: {item.get('away_possession', 'N/D')}
-Finalizações casa: {item.get('home_shots', 'N/D')}
-Finalizações fora: {item.get('away_shots', 'N/D')}
-Finalizações no gol casa: {item.get('home_shots_on_target', 'N/D')}
-Finalizações no gol fora: {item.get('away_shots_on_target', 'N/D')}
-Escanteios casa: {item.get('home_corners', 'N/D')}
-Escanteios fora: {item.get('away_corners', 'N/D')}
-Vermelhos casa: {item.get('home_red_cards', 'N/D')}
-Vermelhos fora: {item.get('away_red_cards', 'N/D')}
-Sinal live sugerido: {item.get('live_signal', 'neutro')}
-Justificativa objetiva do sinal: {item.get('signal_reason', 'sem vantagem clara no momento')}
+Leitura do momento: {item.get('live_signal', 'neutro')}
+Justificativa objetiva: {item.get('signal_reason', 'sem sinais fortes com os dados disponíveis')}
 
 REGRAS:
-- Não invente lances específicos.
-- Explique como a partida está se desenhando.
-- Diga se existe sinal de observação ou possível entrada live, sem prometer resultado.
-- Máximo de 650 caracteres.
+- Não invente posse, finalizações, escanteios ou lances.
+- Comente apenas o andamento geral com base no placar e status.
+- Se os dados forem limitados, mantenha tom prudente.
+- Máximo de 420 caracteres.
 - Não use markdown.
-- Tom analítico, premium e direto.
 """
         return self._generate(prompt)

@@ -1,56 +1,23 @@
 from typing import Dict, Tuple
-from app.config import settings
-
-
-def _to_int(value, default=0) -> int:
-    try:
-        return int(float(str(value).replace("%", "").strip()))
-    except (TypeError, ValueError):
-        return default
 
 
 class LiveSignalService:
     def evaluate(self, snapshot: Dict) -> Tuple[str, str]:
-        home_shots = _to_int(snapshot.get("home_shots"))
-        away_shots = _to_int(snapshot.get("away_shots"))
-        home_on = _to_int(snapshot.get("home_shots_on_target"))
-        away_on = _to_int(snapshot.get("away_shots_on_target"))
-        home_poss = _to_int(snapshot.get("home_possession"))
-        away_poss = _to_int(snapshot.get("away_possession"))
-        home_red = _to_int(snapshot.get("home_red_cards"))
-        away_red = _to_int(snapshot.get("away_red_cards"))
+        home_score = int(snapshot.get("home_score", 0) or 0)
+        away_score = int(snapshot.get("away_score", 0) or 0)
+        status_text = (snapshot.get("status_text") or "").upper()
 
-        shots_diff = home_shots - away_shots
-        on_target_diff = home_on - away_on
-        possession_diff = home_poss - away_poss
+        if "HALF" in status_text or "HT" in status_text:
+            if home_score > away_score:
+                return "casa_favorável", "O mandante vai para o intervalo em vantagem."
+            if away_score > home_score:
+                return "fora_favorável", "O visitante vai para o intervalo em vantagem."
+            return "neutro", "Intervalo com placar equilibrado até aqui."
 
-        if away_red > home_red:
-            return "casa_favorável", "O visitante está com menos jogadores, o que fortalece o cenário para o mandante."
+        if home_score > away_score:
+            return "casa_favorável", "O mandante está à frente no placar neste momento."
 
-        if home_red > away_red:
-            return "fora_favorável", "O mandante está com menos jogadores, o que fortalece o cenário para o visitante."
+        if away_score > home_score:
+            return "fora_favorável", "O visitante está à frente no placar neste momento."
 
-        if (
-            shots_diff >= settings.live_signal_min_shots_diff
-            and on_target_diff >= settings.live_signal_min_on_target_diff
-            and possession_diff >= settings.live_signal_min_possession_diff
-        ):
-            return "casa_favorável", "O mandante produz mais volume, finaliza melhor e controla mais a posse."
-
-        if (
-            shots_diff <= -settings.live_signal_min_shots_diff
-            and on_target_diff <= -settings.live_signal_min_on_target_diff
-            and possession_diff <= -settings.live_signal_min_possession_diff
-        ):
-            return "fora_favorável", "O visitante produz mais volume, finaliza melhor e controla mais a posse."
-
-        if abs(shots_diff) <= 2 and abs(on_target_diff) <= 1 and abs(possession_diff) <= 6:
-            return "neutro", "O jogo está equilibrado e ainda não mostra vantagem estatística forte."
-
-        if shots_diff > 0 or on_target_diff > 0:
-            return "observação_casa", "O mandante dá sinais de crescimento, mas ainda sem domínio absoluto."
-
-        if shots_diff < 0 or on_target_diff < 0:
-            return "observação_fora", "O visitante dá sinais de crescimento, mas ainda sem domínio absoluto."
-
-        return "neutro", "Sem sinais claros de pressão sustentada no momento."
+        return "neutro", "Partida empatada até aqui, sem vantagem clara nos dados disponíveis."

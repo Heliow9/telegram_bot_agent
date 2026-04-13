@@ -45,24 +45,45 @@ class FootballAPIService:
                     timeout=30,
                 )
 
+                print(f"[FOOTBALL_API] GET {response.url} -> {response.status_code}")
+
                 if response.status_code in (429, 500, 502, 503, 504):
-                    body_preview = response.text[:300]
+                    body_preview = response.text[:500]
                     last_error = f"{response.status_code} {response.reason} | body={body_preview}"
                     if attempt < retries:
                         time.sleep(retry_delay * attempt)
                         continue
 
                 response.raise_for_status()
+
                 data = response.json()
-                return data if isinstance(data, dict) else {"response": []}
+                if not isinstance(data, dict):
+                    print("[FOOTBALL_API] Resposta não é dict.")
+                    return {"response": []}
+
+                print(f"[FOOTBALL_API] keys={list(data.keys())}")
+                print(f"[FOOTBALL_API] errors={data.get('errors')}")
+                print(f"[FOOTBALL_API] results={data.get('results')}")
+                print(f"[FOOTBALL_API] paging={data.get('paging')}")
+                print(f"[FOOTBALL_API] parameters={data.get('parameters')}")
+
+                response_items = data.get("response")
+                if isinstance(response_items, list):
+                    print(f"[FOOTBALL_API] response_items={len(response_items)}")
+                    if response_items:
+                        sample = response_items[0]
+                        print(f"[FOOTBALL_API] sample={sample}")
+
+                return data
 
             except requests.exceptions.RequestException as exc:
                 body_preview = ""
                 if response is not None:
                     try:
-                        body_preview = response.text[:300]
+                        body_preview = response.text[:500]
                     except Exception:
                         body_preview = ""
+
                 last_error = f"{exc} | body={body_preview}"
                 if attempt < retries:
                     time.sleep(retry_delay * attempt)
@@ -83,7 +104,35 @@ class FootballAPIService:
 
         data = self._get("fixtures", params=params)
         response = data.get("response")
-        return response if isinstance(response, list) else []
+        items = response if isinstance(response, list) else []
+
+        print(f"[FOOTBALL_API] live fixtures returned: {len(items)}")
+
+        if items:
+            sample = items[0]
+            print(
+                f"[FOOTBALL_API] sample live fixture: "
+                f"league={sample.get('league', {}).get('name')} | "
+                f"{sample.get('teams', {}).get('home', {}).get('name')} x "
+                f"{sample.get('teams', {}).get('away', {}).get('name')} | "
+                f"status={sample.get('fixture', {}).get('status', {}).get('short')}"
+            )
+
+        return items
+
+    def get_fixtures_by_date(self, date_str: str, league_id: Optional[int] = None, season: Optional[str] = None) -> List[Dict[str, Any]]:
+        params = {"date": date_str}
+        if league_id:
+            params["league"] = league_id
+        if season:
+            params["season"] = season
+
+        data = self._get("fixtures", params=params)
+        response = data.get("response")
+        items = response if isinstance(response, list) else []
+
+        print(f"[FOOTBALL_API] fixtures by date returned: {len(items)}")
+        return items
 
     def get_fixture_events(self, fixture_id: int) -> List[Dict[str, Any]]:
         data = self._get("fixtures/events", params={"fixture": fixture_id})

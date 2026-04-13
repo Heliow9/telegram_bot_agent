@@ -77,9 +77,6 @@ class SportsDBAPI:
             "table": [],
         }
 
-    # =============================
-    # HELPERS
-    # =============================
     def get_events_list(self, data: Dict[str, Any]) -> List[Dict[str, Any]]:
         if not data or data.get("error"):
             return []
@@ -99,9 +96,6 @@ class SportsDBAPI:
         events = self.get_events_list(data)
         return events[0] if events else None
 
-    # =============================
-    # LEAGUES
-    # =============================
     def all_leagues(self) -> Dict[str, Any]:
         return self._get("all_leagues.php")
 
@@ -118,9 +112,6 @@ class SportsDBAPI:
             },
         )
 
-    # =============================
-    # EVENTS / FIXTURES
-    # =============================
     def events_by_day(self, date_str: str, league_name: str) -> Dict[str, Any]:
         return self._get(
             "eventsday.php",
@@ -163,9 +154,6 @@ class SportsDBAPI:
             },
         )
 
-    # =============================
-    # TEAM EVENTS
-    # =============================
     def team_last_events(self, team_id: str) -> Dict[str, Any]:
         return self._get(
             "eventslast.php",
@@ -182,9 +170,6 @@ class SportsDBAPI:
             },
         )
 
-    # =============================
-    # TABLE / STANDINGS
-    # =============================
     def lookup_table(self, league_id: str, season: str) -> Dict[str, Any]:
         return self._get(
             "lookuptable.php",
@@ -194,9 +179,6 @@ class SportsDBAPI:
             },
         )
 
-    # =============================
-    # READY-TO-USE METHODS
-    # =============================
     def get_events_by_day_list(self, date_str: str, league_name: str) -> List[Dict[str, Any]]:
         data = self.events_by_day(date_str, league_name)
         return self.get_events_list(data)
@@ -225,9 +207,6 @@ class SportsDBAPI:
         data = self.event_by_id(event_id)
         return self.get_first_event(data)
 
-    # =============================
-    # IMPROVED ANALYSIS METHODS
-    # =============================
     def get_team_last_events_list_limited(self, team_id: str, limit: int = 10) -> List[Dict[str, Any]]:
         events = self.get_team_last_events_list(team_id)
         return events[:limit]
@@ -242,9 +221,6 @@ class SportsDBAPI:
         filtered = [event for event in events if event.get("strAwayTeam") == team_name]
         return filtered[:limit]
 
-    # =============================
-    # RESULTS / FINISHED EVENTS
-    # =============================
     def get_event_result(self, event_id: str) -> Optional[Dict[str, Any]]:
         event = self.get_event_details(event_id)
         if not event:
