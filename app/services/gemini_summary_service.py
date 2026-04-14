@@ -43,7 +43,7 @@ class GeminiSummaryService:
 
         prompt = f"""
 Você é um assistente de apostas esportivas.
-Gere um resumo MUITO curto, em português do Brasil, com no máximo 2 linhas.
+Gere um resumo MUITO curto, em português do Brasil, com no máximo 5 linhas.
 Tom: direto, profissional e natural.
 Não invente fatos além dos dados abaixo.
 
@@ -60,7 +60,7 @@ Regras:
 - Se o palpite errou, explique brevemente onde falhou.
 - Não use markdown.
 - Não use listas.
-- Não passe de 220 caracteres.
+- Não passe de 660 caracteres.
 """
         return self._generate(prompt)
 
@@ -80,16 +80,16 @@ Time que marcou: {item.get('scoring_team', 'não identificado')}
 REGRAS:
 - Use só os dados acima.
 - Não invente autor do gol, assistência, drible, pressão, posse ou estatísticas.
-- Máximo de 350 caracteres.
+- Máximo de 1200 caracteres.
 - Não use markdown.
-- Tom forte, natural e objetivo.
+
 """
         return self._generate(prompt)
 
     def build_live_checkpoint_summary(self, item: dict) -> Optional[str]:
         prompt = f"""
 Você é um analista de futebol ao vivo.
-Gere uma atualização curta para Telegram, em português do Brasil.
+Gere uma atualização curta para Telegram, em português do Brasil sem linguagem formal.
 
 DADOS CONFIRMADOS:
 Liga: {item.get('league', 'Jogo')}
@@ -104,7 +104,7 @@ REGRAS:
 - Não invente posse, finalizações, escanteios ou lances.
 - Comente apenas o andamento geral com base no placar e status.
 - Se os dados forem limitados, mantenha tom prudente.
-- Máximo de 420 caracteres.
+- Máximo de 1200 caracteres.
 - Não use markdown.
 """
         return self._generate(prompt)

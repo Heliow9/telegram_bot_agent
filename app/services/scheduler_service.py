@@ -306,7 +306,6 @@ def job_check_games():
         except Exception as e:
             print(f"[SCHEDULER] Erro no envio pré-jogo: {e}")
 
-    # após alertas, atualiza silenciosamente a linha dos jogos pendentes
     _refresh_clv_for_pending_predictions()
 
 
@@ -420,10 +419,11 @@ def start_scheduler():
         coalesce=True,
     )
 
+    # Pré-jogo agora roda a cada 1 minuto para acertar melhor a janela real
     scheduler.add_job(
         job_check_games,
         "interval",
-        minutes=15,
+        minutes=1,
         id="job_check_games",
         replace_existing=True,
         max_instances=1,
@@ -458,7 +458,7 @@ def start_scheduler():
     print("[SCHEDULER] Executando primeira verificação imediata de resultados...")
     job_check_results()
 
-    print("[SCHEDULER] Primeira verificação de pré-jogo ficará para o agendamento normal.")
+    print("[SCHEDULER] Primeira verificação de pré-jogo ficará para o próximo ciclo de 1 minuto.")
 
     if settings.live_monitor_enabled:
         print("[SCHEDULER] Monitor live habilitado e aguardando próximo ciclo normal.")

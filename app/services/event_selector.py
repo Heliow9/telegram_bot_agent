@@ -1,87 +1,96 @@
-from typing import List, Dict, Optional
+from typing import List, Dict
 from app.services.time_utils import event_to_local_datetime, now_local
 
 
-def get_upcoming_events(events: List[Dict]) -> List[Dict]:
-    now = now_local()
-    upcoming = []
-
-    for event in events:
-        dt_local = event_to_local_datetime(
-            event.get("dateEvent", ""),
-            event.get("strTime", ""),
-        )
-
-        if dt_local is None:
-            continue
-
-        if dt_local > now:
-            upcoming.append(event)
-
-    upcoming.sort(
-        key=lambda e: event_to_local_datetime(
-            e.get("dateEvent", ""),
-            e.get("strTime", ""),
-        ) or now
+def _extract_hour(event: Dict) -> int | None:
+    dt_local = event_to_local_datetime(
+        event.get("dateEvent", ""),
+        event.get("strTime", ""),
     )
+    if dt_local is None:
+        return None
+    return dt_local.hour
 
-    return upcoming
 
-
-def get_next_valid_event(events: List[Dict]) -> Optional[Dict]:
-    upcoming = get_upcoming_events(events)
-    return upcoming[0] if upcoming else None
+def _is_future_event(event: Dict) -> bool:
+    dt_local = event_to_local_datetime(
+        event.get("dateEvent", ""),
+        event.get("strTime", ""),
+    )
+    if dt_local is None:
+        return False
+    return dt_local > now_local()
 
 
 def filter_morning_events(events: List[Dict]) -> List[Dict]:
-    filtered = []
+    """
+    Jogos futuros da manhã.
+    Faixa sugerida: 05:00 até 11:59
+    """
+    selected = []
 
-    for event in get_upcoming_events(events):
-        dt_local = event_to_local_datetime(
-            event.get("dateEvent", ""),
-            event.get("strTime", ""),
-        )
-        if dt_local is None:
+    for event in events:
+        if not _is_future_event(event):
             continue
 
-        if 6 <= dt_local.hour < 12:
-            filtered.append(event)
+        hour = _extract_hour(event)
+        if hour is None:
+            continue
 
-    return filtered
+        if 5 <= hour < 12:
+            selected.append(event)
+
+    return sorted(
+        selected,
+        key=lambda e: event_to_local_datetime(
+            e.get("dateEvent", ""),
+            e.get("strTime", ""),
+        ) or now_local()
+    )
 
 
 def filter_afternoon_events(events: List[Dict]) -> List[Dict]:
-    filtered = []
+    """
+    Jogos futuros da tarde/noite.
+    Faixa sugerida: 12:00 até 23:59
+    """
+    selected = []
 
-    for event in get_upcoming_events(events):
-        dt_local = event_to_local_datetime(
-            event.get("dateEvent", ""),
-            event.get("strTime", ""),
-        )
-        if dt_local is None:
+    for event in events:
+        if not _is_future_event(event):
             continue
 
-        if dt_local.hour >= 12:
-            filtered.append(event)
+        hour = _extract_hour(event)
+        if hour is None:
+            continue
 
-    return filtered
+        if 12 <= hour <= 23:
+            selected.append(event)
+
+    return sorted(
+        selected,
+        key=lambda e: event_to_local_datetime(
+            e.get("dateEvent", ""),
+            e.get("strTime", ""),
+        ) or now_local()
+    )
 
 
 def filter_events_starting_in_30_minutes(
     events: List[Dict],
-    max_minutes: int = 30,
+    min_minutes: int = 28,
+    max_minutes: int = 31,
 ) -> List[Dict]:
     """
-    Retorna jogos que:
-    - ainda não começaram
-    - faltam até 30 minutos para iniciar
-
-    Exemplo:
-    Se o servidor sobe às 17:44 e o jogo é 18:00,
-    esse jogo entra porque faltam 16 minutos.
+    Seleciona jogos cuja partida começa em uma janela próxima dos 30 minutos.
+    Em produção, uma janela de 28 a 31 minutos funciona melhor do que
+    tentar ser exato demais, porque tolera:
+    - pequenos atrasos de execução
+    - tempo de resposta da API
+    - latência do servidor
     """
     now = now_local()
-    filtered = []
+    selected = []
 
     for event in events:
         dt_local = event_to_local_datetime(
@@ -92,16 +101,15 @@ def filter_events_starting_in_30_minutes(
         if dt_local is None:
             continue
 
-        diff_minutes = (dt_local - now).total_seconds() / 60
+        diff_minutes = (dt_local - now).total_seconds() / 60.0
 
-        if 0 < diff_minutes <= max_minutes:
-            filtered.append(event)
+        if min_minutes <= diff_minutes <= max_minutes:
+            selected.append(event)
 
-    filtered.sort(
+    return sorted(
+        selected,
         key=lambda e: event_to_local_datetime(
             e.get("dateEvent", ""),
             e.get("strTime", ""),
-        ) or now
+        ) or now_local()
     )
-
-    return filtered
