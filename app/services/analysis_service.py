@@ -164,6 +164,7 @@ class AnalysisService:
         return sorted(
             payloads,
             key=lambda p: (
+                p["analysis"].get("value_bet", {}).get("edge", 0.0),
                 p["analysis"]["best_probability"],
                 p["analysis"].get("ranking_score", 0),
             ),

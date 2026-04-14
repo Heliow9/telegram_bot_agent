@@ -32,6 +32,9 @@ class Settings(BaseModel):
     gemini_model: str = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 
     odds_api_key: str = os.getenv("ODDS_API_KEY", "")
+    odds_regions: str = os.getenv("ODDS_REGIONS", "eu")
+    odds_markets: str = os.getenv("ODDS_MARKETS", "h2h")
+    odds_format: str = os.getenv("ODDS_FORMAT", "decimal")
     value_bet_edge: float = float(os.getenv("VALUE_BET_EDGE", "0.05"))
 
     live_monitor_enabled: bool = os.getenv("LIVE_MONITOR_ENABLED", "true").lower() == "true"

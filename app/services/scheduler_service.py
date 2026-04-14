@@ -111,12 +111,16 @@ def _send_ranked_summary(payloads: list[dict], period_label: str):
     grouped = group_payloads_by_league(payloads)
 
     desired_order = [
-        "Brasileirão Série A",
-        "Brasileirão Série B",
-        "Premier League",
-        "Argentina Liga Profesional",
-        "Itália Série A",
-        "Turquia Super Lig",
+          "Brasileirão Série A",
+    "Brasileirão Série B",
+    "Premier League",
+    "Championship",
+    "Liga dos Campeões",
+    "Argentina Liga Profesional",
+    "Itália Série A",
+    "Turquia Super Lig",
+    "Libertadores",
+    "Copa Sul-Americana",
     ]
 
     for league_name in desired_order:

@@ -7,7 +7,7 @@ class ValueBetService:
         self.edge = settings.value_bet_edge
 
     @staticmethod
-    def decimal_to_implied_prob(odds: float) -> float:
+    def decimal_to_implied_prob(odds: Optional[float]) -> float:
         if not odds or odds <= 0:
             return 0.0
         return 1.0 / odds
@@ -25,14 +25,17 @@ class ValueBetService:
 
         markets = {
             "1": {
+                "label": "Casa",
                 "model_prob": probs.get("1", 0.0),
                 "odds": odds.get("home_odds"),
             },
             "X": {
+                "label": "Empate",
                 "model_prob": probs.get("X", 0.0),
                 "odds": odds.get("draw_odds"),
             },
             "2": {
+                "label": "Fora",
                 "model_prob": probs.get("2", 0.0),
                 "odds": odds.get("away_odds"),
             },
@@ -55,9 +58,10 @@ class ValueBetService:
                 best_market = market
                 best_details = {
                     "market": market,
+                    "label": data["label"],
                     "model_prob": round(data["model_prob"], 4),
                     "implied_prob": round(implied, 4),
-                    "odds": market_odds,
+                    "odds": round(float(market_odds), 2),
                     "edge": round(edge, 4),
                 }
 

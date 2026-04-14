@@ -9,6 +9,10 @@ LEAGUE_EMOJIS = {
     "Argentina Liga Profesional": "🇦🇷",
     "Itália Série A": "🇮🇹",
     "Turquia Super Lig": "🇹🇷",
+    "Liga dos Campeões": "🇪🇺",
+    "Copa Sul-Americana": "🌎",
+    "Libertadores": "🏆",
+    "Championship": "🏴",
 }
 
 
@@ -50,6 +54,49 @@ def _result_label(real_result: str, home_team: str, away_team: str) -> str:
     return str(real_result)
 
 
+def _format_odds(analysis: dict) -> list[str]:
+    odds = analysis.get("odds")
+    if not odds:
+        return []
+
+    lines = [
+        "",
+        "📉 *Odds 1X2*",
+    ]
+
+    if odds.get("home_odds"):
+        lines.append(f"• Casa: *{odds['home_odds']:.2f}*")
+    if odds.get("draw_odds"):
+        lines.append(f"• Empate: *{odds['draw_odds']:.2f}*")
+    if odds.get("away_odds"):
+        lines.append(f"• Fora: *{odds['away_odds']:.2f}*")
+
+    if odds.get("bookmaker"):
+        lines.append(f"• Bookmaker: *{odds['bookmaker']}*")
+
+    return lines
+
+
+def _format_value_bet(analysis: dict) -> list[str]:
+    value_bet = analysis.get("value_bet") or {}
+    if not value_bet.get("has_value"):
+        return []
+
+    details = value_bet.get("details") or {}
+    if not details:
+        return []
+
+    return [
+        "",
+        "💰 *Value Bet Detectado*",
+        f"• Mercado: *{details.get('label')}* ({details.get('market')})",
+        f"• Odd: *{details.get('odds')}*",
+        f"• Prob. modelo: *{details.get('model_prob', 0):.0%}*",
+        f"• Prob. implícita: *{details.get('implied_prob', 0):.0%}*",
+        f"• Edge: *{details.get('edge', 0):.2%}*",
+    ]
+
+
 def format_prediction_message(payload: dict) -> str:
     fixture = payload["fixture"]
     analysis = payload["analysis"]
@@ -88,7 +135,11 @@ def format_prediction_message(payload: dict) -> str:
         "",
         f"🎯 *Palpite:* {_pick_label(analysis['suggested_pick'])} ({analysis['suggested_pick']})",
         f"🔒 *Confiança:* {_confidence_label(analysis['confidence'])}",
+        f"🧠 *Modelo:* {analysis.get('model_source', 'heuristic').upper()}",
     ])
+
+    lines.extend(_format_odds(analysis))
+    lines.extend(_format_value_bet(analysis))
 
     return "\n".join(lines)
 
@@ -103,7 +154,7 @@ def format_best_pick(payload: dict) -> str:
     home_team = fixture["home_team"]
     away_team = fixture["away_team"]
 
-    return "\n".join([
+    lines = [
         "🔥 *APOSTA MAIS FORTE DO DIA*",
         "",
         f"{emoji} *{league_name}*",
@@ -117,7 +168,13 @@ def format_best_pick(payload: dict) -> str:
         "",
         f"🎯 *Entrada sugerida:* {_pick_label(analysis['suggested_pick'])} ({analysis['suggested_pick']})",
         f"🔒 *Confiança:* {_confidence_label(analysis['confidence'])}",
-    ])
+        f"🧠 *Modelo:* {analysis.get('model_source', 'heuristic').upper()}",
+    ]
+
+    if analysis.get("value_bet", {}).get("has_value"):
+        lines.append("💰 *Tem value bet*")
+
+    return "\n".join(lines)
 
 
 def format_top_ranking(payloads: list[dict], top_n: int = 5) -> str:
@@ -135,11 +192,12 @@ def format_top_ranking(payloads: list[dict], top_n: int = 5) -> str:
         league_name = payload["league"]["display_name"]
         emoji = _league_emoji(league_name)
         marker = medals[idx] if idx < len(medals) else f"{idx + 1}."
+        value_flag = " 💰" if analysis.get("value_bet", {}).get("has_value") else ""
 
         home_team = fixture["home_team"]
         away_team = fixture["away_team"]
 
-        lines.append(f"{marker} *{home_team} x {away_team}*")
+        lines.append(f"{marker} *{home_team} x {away_team}*{value_flag}")
         lines.append(f"{emoji} {league_name} • {_time_only(fixture['date'], fixture['time'])}")
         lines.append(
             f"Palpite: *{_pick_label(analysis['suggested_pick'])}* • "
@@ -167,11 +225,12 @@ def format_league_summary(league_name: str, payloads: list[dict]) -> str:
     for payload in payloads:
         fixture = payload["fixture"]
         analysis = payload["analysis"]
+        value_flag = " 💰" if analysis.get("value_bet", {}).get("has_value") else ""
 
         home_team = fixture["home_team"]
         away_team = fixture["away_team"]
 
-        lines.append(f"⚽ *{home_team} x {away_team}*")
+        lines.append(f"⚽ *{home_team} x {away_team}*{value_flag}")
         lines.append(f"🕒 {_time_only(fixture['date'], fixture['time'])}")
         lines.append(
             f"🎯 *{_pick_label(analysis['suggested_pick'])}* | "
@@ -227,12 +286,6 @@ def format_result_message(item: dict, ai_summary: str | None = None) -> str:
 
 
 def pick_winner_photo_url(item: dict) -> str | None:
-    """
-    Escolhe a imagem do vencedor.
-    Espera que o item possa ter:
-    - home_badge
-    - away_badge
-    """
     real_result = item.get("real_result")
     home_badge = item.get("home_badge")
     away_badge = item.get("away_badge")
@@ -243,5 +296,4 @@ def pick_winner_photo_url(item: dict) -> str | None:
     if real_result == "2" and away_badge:
         return away_badge
 
-    # empate: sem vencedor claro
     return None
