@@ -1,32 +1,138 @@
 import time
+import threading
 import requests
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Tuple
 from app.config import settings
 
 
 class SportsDBAPI:
+    _cache_lock = threading.Lock()
+    _request_lock = threading.Lock()
+    _cache: Dict[Tuple[str, tuple], Tuple[float, Dict[str, Any]]] = {}
+    _next_allowed_request_ts: float = 0.0
+
     def __init__(self):
         self.base_url = settings.sportsdb_base_url.rstrip("/")
         self.api_key = settings.sportsdb_api_key
+
+        # cache curto para aliviar chamadas repetidas
+        self.default_cache_ttl_seconds = 120
+        self.event_details_cache_ttl_seconds = 60
+        self.table_cache_ttl_seconds = 600
+        self.team_form_cache_ttl_seconds = 300
+
+        # rate limit defensivo para plano free
+        self.min_interval_between_requests_seconds = 1.2
+        self.cooldown_on_429_seconds = 20.0
+
+    def _build_cache_key(self, endpoint: str, params: Optional[dict]) -> Tuple[str, tuple]:
+        if not params:
+            return endpoint, tuple()
+        normalized = tuple(sorted((str(k), str(v)) for k, v in params.items()))
+        return endpoint, normalized
+
+    def _get_cached(self, endpoint: str, params: Optional[dict]) -> Optional[Dict[str, Any]]:
+        cache_key = self._build_cache_key(endpoint, params)
+
+        with self._cache_lock:
+            cached = self._cache.get(cache_key)
+            if not cached:
+                return None
+
+            expires_at, data = cached
+            if time.time() > expires_at:
+                del self._cache[cache_key]
+                return None
+
+            return data
+
+    def _set_cache(self, endpoint: str, params: Optional[dict], data: Dict[str, Any], ttl: int):
+        cache_key = self._build_cache_key(endpoint, params)
+        with self._cache_lock:
+            self._cache[cache_key] = (time.time() + ttl, data)
+
+    def _pick_cache_ttl(self, endpoint: str) -> int:
+        endpoint = endpoint.lower()
+
+        if endpoint == "lookupevent.php":
+            return self.event_details_cache_ttl_seconds
+
+        if endpoint == "lookuptable.php":
+            return self.table_cache_ttl_seconds
+
+        if endpoint in ("eventslast.php", "eventsnext.php"):
+            return self.team_form_cache_ttl_seconds
+
+        return self.default_cache_ttl_seconds
+
+    def _respect_global_rate_limit(self):
+        with self._request_lock:
+            now = time.time()
+
+            if now < SportsDBAPI._next_allowed_request_ts:
+                sleep_time = SportsDBAPI._next_allowed_request_ts - now
+                time.sleep(sleep_time)
+
+            SportsDBAPI._next_allowed_request_ts = time.time() + self.min_interval_between_requests_seconds
+
+    def _register_429_cooldown(self):
+        with self._request_lock:
+            SportsDBAPI._next_allowed_request_ts = max(
+                SportsDBAPI._next_allowed_request_ts,
+                time.time() + self.cooldown_on_429_seconds,
+            )
+
+    def _error_payload(self, endpoint: str, details: str) -> Dict[str, Any]:
+        return {
+            "error": True,
+            "message": f"Falha ao consultar {endpoint}",
+            "details": details,
+            "events": [],
+            "results": [],
+            "event": [],
+            "table": [],
+        }
 
     def _get(
         self,
         endpoint: str,
         params: Optional[dict] = None,
-        retries: int = 3,
-        retry_delay: float = 1.5,
+        retries: int = 2,
+        retry_delay: float = 2.0,
+        use_cache: bool = True,
     ) -> Dict[str, Any]:
         url = f"{self.base_url}/{self.api_key}/{endpoint.lstrip('/')}"
         last_error = None
 
+        if use_cache:
+            cached = self._get_cached(endpoint, params)
+            if cached is not None:
+                return cached
+
         for attempt in range(1, retries + 1):
             response = None
+
             try:
+                self._respect_global_rate_limit()
+
                 response = requests.get(url, params=params or {}, timeout=30)
 
-                if response.status_code in (429, 500, 502, 503, 504):
+                if response.status_code == 429:
+                    body_preview = response.text[:300]
+                    last_error = f"429 Too Many Requests | body={body_preview}"
+                    self._register_429_cooldown()
+
+                    if attempt < retries:
+                        time.sleep(retry_delay * attempt)
+                        continue
+
+                    print(f"[SportsDBAPI] ERRO endpoint={endpoint} params={params} details={last_error}")
+                    return self._error_payload(endpoint, last_error)
+
+                if response.status_code in (500, 502, 503, 504):
                     body_preview = response.text[:300]
                     last_error = f"{response.status_code} {response.reason} | body={body_preview}"
+
                     if attempt < retries:
                         time.sleep(retry_delay * attempt)
                         continue
@@ -37,7 +143,7 @@ class SportsDBAPI:
                     data = response.json()
                 except ValueError:
                     body_preview = response.text[:300]
-                    return {
+                    error_data = {
                         "error": True,
                         "message": f"Resposta inválida em {endpoint}",
                         "details": body_preview,
@@ -46,9 +152,18 @@ class SportsDBAPI:
                         "event": [],
                         "table": [],
                     }
+                    if use_cache:
+                        self._set_cache(endpoint, params, error_data, 30)
+                    return error_data
 
                 if not isinstance(data, dict):
-                    return {"raw": data}
+                    wrapped = {"raw": data}
+                    if use_cache:
+                        self._set_cache(endpoint, params, wrapped, self._pick_cache_ttl(endpoint))
+                    return wrapped
+
+                if use_cache:
+                    self._set_cache(endpoint, params, data, self._pick_cache_ttl(endpoint))
 
                 return data
 
@@ -61,21 +176,13 @@ class SportsDBAPI:
                         body_preview = ""
 
                 last_error = f"{exc} | body={body_preview}"
+
                 if attempt < retries:
                     time.sleep(retry_delay * attempt)
                     continue
 
         print(f"[SportsDBAPI] ERRO endpoint={endpoint} params={params} details={last_error}")
-
-        return {
-            "error": True,
-            "message": f"Falha ao consultar {endpoint}",
-            "details": last_error,
-            "events": [],
-            "results": [],
-            "event": [],
-            "table": [],
-        }
+        return self._error_payload(endpoint, last_error or "erro desconhecido")
 
     def get_events_list(self, data: Dict[str, Any]) -> List[Dict[str, Any]]:
         if not data or data.get("error"):

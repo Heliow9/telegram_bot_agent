@@ -111,16 +111,16 @@ def _send_ranked_summary(payloads: list[dict], period_label: str):
     grouped = group_payloads_by_league(payloads)
 
     desired_order = [
-          "Brasileirão Série A",
-    "Brasileirão Série B",
-    "Premier League",
-    "Championship",
-    "Liga dos Campeões",
-    "Argentina Liga Profesional",
-    "Itália Série A",
-    "Turquia Super Lig",
-    "Libertadores",
-    "Copa Sul-Americana",
+        "Brasileirão Série A",
+        "Brasileirão Série B",
+        "Premier League",
+        "Championship",
+        "Liga dos Campeões",
+        "Argentina Liga Profesional",
+        "Itália Série A",
+        "Turquia Super Lig",
+        "Libertadores",
+        "Copa Sul-Americana",
     ]
 
     for league_name in desired_order:
@@ -152,8 +152,9 @@ def job_send_morning_summary():
     if not payloads:
         result = telegram.send_message(
             "📭 *Nenhum jogo encontrado pela manhã hoje.*\n\n"
-            "Ligas monitoradas: Brasileirão A, Brasileirão B, Premier League, "
-            "Argentina Liga Profesional, Itália Série A e Turquia Super Lig."
+            "Ligas monitoradas: Brasileirão A, Brasileirão B, Premier League, Championship, "
+            "Liga dos Campeões, Argentina Liga Profesional, Itália Série A, "
+            "Turquia Super Lig, Libertadores e Copa Sul-Americana."
         )
         print(f"[SCHEDULER] Aviso de manhã sem jogos enviado: {result}")
         _save_sent_summary(summary_key)
@@ -184,8 +185,9 @@ def job_send_afternoon_summary():
     if not payloads:
         result = telegram.send_message(
             "📭 *Nenhum jogo encontrado para a tarde/noite hoje.*\n\n"
-            "Ligas monitoradas: Brasileirão A, Brasileirão B, Premier League, "
-            "Argentina Liga Profesional, Itália Série A e Turquia Super Lig."
+            "Ligas monitoradas: Brasileirão A, Brasileirão B, Premier League, Championship, "
+            "Liga dos Campeões, Argentina Liga Profesional, Itália Série A, "
+            "Turquia Super Lig, Libertadores e Copa Sul-Americana."
         )
         print(f"[SCHEDULER] Aviso de tarde/noite sem jogos enviado: {result}")
         _save_sent_summary(summary_key)
@@ -290,6 +292,10 @@ def job_check_results():
 
 
 def job_monitor_live_matches():
+    if not settings.live_monitor_enabled:
+        print("[LIVE] Monitor live desativado por configuração.")
+        return
+
     print(f"[LIVE] Rodando monitor live: {now_local()}")
     try:
         live_monitor.monitor_live_matches()
@@ -329,7 +335,7 @@ def start_scheduler():
     scheduler.add_job(
         job_check_games,
         "interval",
-        minutes=7,
+        minutes=15,
         id="job_check_games",
         replace_existing=True,
         max_instances=1,
@@ -339,32 +345,33 @@ def start_scheduler():
     scheduler.add_job(
         job_check_results,
         "interval",
-        minutes=10,
+        minutes=15,
         id="job_check_results",
         replace_existing=True,
         max_instances=1,
         coalesce=True,
     )
 
-    scheduler.add_job(
-        job_monitor_live_matches,
-        "interval",
-        minutes=3,
-        id="job_monitor_live_matches",
-        replace_existing=True,
-        max_instances=1,
-        coalesce=True,
-    )
+    if settings.live_monitor_enabled:
+        scheduler.add_job(
+            job_monitor_live_matches,
+            "interval",
+            seconds=settings.live_monitor_interval_seconds,
+            id="job_monitor_live_matches",
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+        )
 
     scheduler.start()
     scheduler_started = True
     print("[SCHEDULER] Iniciado com sucesso.")
 
-    print("[SCHEDULER] Executando primeira verificação imediata de pré-jogo...")
-    job_check_games()
-
+    # no startup, evita tempestade de requests:
     print("[SCHEDULER] Executando primeira verificação imediata de resultados...")
     job_check_results()
 
-    print("[SCHEDULER] Executando primeira verificação imediata de live...")
-    job_monitor_live_matches()
+    print("[SCHEDULER] Primeira verificação de pré-jogo ficará para o agendamento normal.")
+
+    if settings.live_monitor_enabled:
+        print("[SCHEDULER] Monitor live habilitado e aguardando próximo ciclo normal.")
