@@ -1,4 +1,3 @@
-import time
 import unicodedata
 import requests
 from typing import Optional, Dict, Any, List
@@ -13,13 +12,12 @@ class OddsService:
         self.markets = settings.odds_markets
         self.odds_format = settings.odds_format
 
-        self._sports_cache: list[dict] = []
-        self._sports_cache_ts: float = 0.0
-        self._sports_cache_ttl_seconds = 60 * 30
-
     def is_available(self) -> bool:
         return bool(self.api_key)
 
+    # ---------------------------------------------------------------------
+    # NORMALIZAÇÃO
+    # ---------------------------------------------------------------------
     def _normalize_text(self, value: str) -> str:
         if not value:
             return ""
@@ -34,70 +32,37 @@ class OddsService:
         value = value.replace("club", " ")
         value = value.replace("associazione", " ")
         value = value.replace("sportiva", " ")
+        value = value.replace("de", " ")
+        value = value.replace("da", " ")
         value = " ".join(value.split())
         return value.strip()
 
-    def _get_sports(self) -> List[Dict[str, Any]]:
-        if not self.is_available():
-            return []
-
-        now = time.time()
-        if self._sports_cache and (now - self._sports_cache_ts) < self._sports_cache_ttl_seconds:
-            return self._sports_cache
-
-        url = f"{self.base_url}/sports"
-        params = {
-            "apiKey": self.api_key,
-            "all": "true",
-        }
-
-        try:
-            response = requests.get(url, params=params, timeout=20)
-            response.raise_for_status()
-            data = response.json()
-
-            if isinstance(data, list):
-                self._sports_cache = data
-                self._sports_cache_ts = now
-                return data
-
-            return []
-        except Exception as e:
-            print(f"[ODDS] Erro ao buscar lista de sports: {e}")
-            return []
-
+    # ---------------------------------------------------------------------
+    # MAPEAMENTO DE LIGAS
+    # ---------------------------------------------------------------------
     def _find_sport_key(self, league_name: str) -> Optional[str]:
-        if not self.is_available():
-            return None
+        normalized = self._normalize_text(league_name)
 
-        normalized_league = self._normalize_text(league_name)
-        sports = self._get_sports()
-
-        hardcoded = {
+        mapping = {
+            # ✅ SUPORTADAS
             "premier league": "soccer_epl",
-            "italia serie a": "soccer_italy_serie_a",
             "brasileirao serie a": "soccer_brazil_campeonato",
             "argentina liga profesional": "soccer_argentina_primera_division",
-            "turquia super lig": "soccer_turkey_super_lig",
+            "italia serie a": "soccer_italy_serie_a",
+            "turquia super lig": "soccer_turkey_super_league",
+            "liga dos campeoes": "soccer_uefa_champs_league",
+            "championship": "soccer_efl_champ",
+
+            # ❌ NÃO SUPORTADAS (tratadas com fallback)
+            "libertadores": None,
+            "copa sul americana": None,
         }
 
-        for k, v in hardcoded.items():
-            if normalized_league == k:
-                return v
+        return mapping.get(normalized)
 
-        for sport in sports:
-            key = sport.get("key", "")
-            title = self._normalize_text(sport.get("title", ""))
-            description = self._normalize_text(
-                sport.get("description", "") or sport.get("details", "")
-            )
-
-            haystack = f"{title} {description} {key}"
-            if normalized_league in haystack:
-                return key
-
-        return None
-
+    # ---------------------------------------------------------------------
+    # MATCH DE TIMES
+    # ---------------------------------------------------------------------
     def _team_names_match(self, api_name: str, target_name: str) -> bool:
         a = self._normalize_text(api_name)
         b = self._normalize_text(target_name)
@@ -115,17 +80,17 @@ class OddsService:
             return False
 
         overlap = len(a_tokens.intersection(b_tokens))
-        return overlap >= max(1, min(len(a_tokens), len(b_tokens)) - 1)
+        return overlap >= 1
 
     def _match_game(self, game: Dict[str, Any], home_team: str, away_team: str) -> bool:
-        api_home = game.get("home_team", "")
-        api_away = game.get("away_team", "")
-
         return (
-            self._team_names_match(api_home, home_team)
-            and self._team_names_match(api_away, away_team)
+            self._team_names_match(game.get("home_team", ""), home_team)
+            and self._team_names_match(game.get("away_team", ""), away_team)
         )
 
+    # ---------------------------------------------------------------------
+    # EXTRAÇÃO DE ODDS
+    # ---------------------------------------------------------------------
     def _extract_h2h_odds(
         self,
         game: Dict[str, Any],
@@ -141,12 +106,11 @@ class OddsService:
                 if market.get("key") != "h2h":
                     continue
 
-                outcomes = market.get("outcomes", [])
                 home_odds = None
                 draw_odds = None
                 away_odds = None
 
-                for outcome in outcomes:
+                for outcome in market.get("outcomes", []):
                     name = outcome.get("name", "")
                     price = outcome.get("price")
 
@@ -170,6 +134,9 @@ class OddsService:
 
         return None
 
+    # ---------------------------------------------------------------------
+    # BUSCA PRINCIPAL
+    # ---------------------------------------------------------------------
     def get_match_odds(
         self,
         home_team: str,
@@ -177,15 +144,19 @@ class OddsService:
         league_name: str,
         match_date: str = "",
     ) -> Optional[Dict[str, Any]]:
+
         if not self.is_available():
             return None
 
         sport_key = self._find_sport_key(league_name)
-        if not sport_key:
-            print(f"[ODDS] Sport key não encontrado para liga: {league_name}")
+
+        # 🔥 Fallback inteligente
+        if sport_key is None:
+            print(f"[ODDS] Liga sem cobertura: {league_name}")
             return None
 
         url = f"{self.base_url}/sports/{sport_key}/odds"
+
         params = {
             "apiKey": self.api_key,
             "regions": self.regions,
@@ -195,6 +166,12 @@ class OddsService:
 
         try:
             response = requests.get(url, params=params, timeout=20)
+
+            # 🔥 evita log feio de erro
+            if response.status_code == 404:
+                print(f"[ODDS] Liga não disponível na API: {league_name}")
+                return None
+
             response.raise_for_status()
             data = response.json()
 
@@ -207,9 +184,9 @@ class OddsService:
                     if odds:
                         return odds
 
-            print(f"[ODDS] Odds não encontradas para {home_team} x {away_team} em {league_name}")
+            print(f"[ODDS] Odds não encontradas: {home_team} x {away_team}")
             return None
 
         except Exception as e:
-            print(f"[ODDS] Erro ao buscar odds de {home_team} x {away_team}: {e}")
+            print(f"[ODDS] Erro ao buscar odds: {home_team} x {away_team} | {e}")
             return None

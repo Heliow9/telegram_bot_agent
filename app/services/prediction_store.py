@@ -32,6 +32,19 @@ def save_all_predictions(data: List[Dict]):
 def save_prediction(payload: dict):
     data = load_predictions()
 
+    analysis = payload["analysis"]
+    odds = analysis.get("odds")
+    suggested_pick = analysis.get("suggested_pick")
+
+    opening_market_odds = None
+    if odds:
+        if suggested_pick == "1":
+            opening_market_odds = odds.get("home_odds")
+        elif suggested_pick == "X":
+            opening_market_odds = odds.get("draw_odds")
+        elif suggested_pick == "2":
+            opening_market_odds = odds.get("away_odds")
+
     record = {
         "saved_at": datetime.utcnow().isoformat(),
         "league": payload["league"]["display_name"],
@@ -40,20 +53,23 @@ def save_prediction(payload: dict):
         "away_team": payload["fixture"]["away_team"],
         "date": payload["fixture"]["date"],
         "time": payload["fixture"]["time"],
-        "pick": payload["analysis"]["suggested_pick"],
-        "prob_home": round(payload["analysis"]["prob_home"], 4),
-        "prob_draw": round(payload["analysis"]["prob_draw"], 4),
-        "prob_away": round(payload["analysis"]["prob_away"], 4),
-        "confidence": payload["analysis"]["confidence"],
+        "pick": analysis["suggested_pick"],
+        "prob_home": round(analysis["prob_home"], 4),
+        "prob_draw": round(analysis["prob_draw"], 4),
+        "prob_away": round(analysis["prob_away"], 4),
+        "confidence": analysis["confidence"],
         "result": None,
         "home_score": None,
         "away_score": None,
         "status": "pending",
         "checked_at": None,
-        "features": payload["analysis"].get("features"),
-        "model_source": payload["analysis"].get("model_source"),
-        "odds": payload["analysis"].get("odds"),
-        "value_bet": payload["analysis"].get("value_bet"),
+        "features": analysis.get("features"),
+        "model_source": analysis.get("model_source"),
+        "odds_snapshot": odds,
+        "fair_odds_snapshot": analysis.get("fair_odds"),
+        "opening_market_odds": opening_market_odds,
+        "latest_market_odds": opening_market_odds,
+        "clv": None,
     }
 
     already_exists = any(item.get("fixture_id") == record["fixture_id"] for item in data)
@@ -90,16 +106,38 @@ def update_prediction_result(
     save_all_predictions(data)
 
 
-def get_pending_predictions():
+def update_prediction_market_odds(
+    fixture_id: str,
+    latest_market_odds: Optional[float],
+):
+    if latest_market_odds is None:
+        return
+
     data = load_predictions()
 
-    # considera pending se:
-    # - não tem status
-    # - ou status é pending
+    for item in data:
+        if str(item.get("fixture_id")) == str(fixture_id):
+            item["latest_market_odds"] = latest_market_odds
+
+            opening = item.get("opening_market_odds")
+            if opening is not None:
+                item["clv"] = {
+                    "opening_odds": round(float(opening), 2),
+                    "closing_odds": round(float(latest_market_odds), 2),
+                    "movement": round(float(latest_market_odds) - float(opening), 2),
+                }
+            break
+
+    save_all_predictions(data)
+
+
+def get_pending_predictions():
+    data = load_predictions()
     return [
         item for item in data
         if item.get("status") in (None, "pending")
     ]
+
 
 def get_resolved_predictions() -> List[Dict]:
     return [item for item in load_predictions() if item.get("status") in ("hit", "miss")]

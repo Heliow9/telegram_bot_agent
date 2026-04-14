@@ -18,6 +18,13 @@ from app.services.time_utils import now_local
 from app.services.result_checker_service import ResultCheckerService
 from app.services.gemini_summary_service import GeminiSummaryService
 from app.services.live_match_monitor_service import LiveMatchMonitorService
+from app.services.training_dataset_service import TrainingDatasetService
+from app.services.ml_training_service import MLTrainingService
+from app.services.odds_service import OddsService
+from app.services.prediction_store import (
+    get_pending_predictions,
+    update_prediction_market_odds,
+)
 
 
 scheduler = BackgroundScheduler(timezone="America/Recife")
@@ -26,6 +33,9 @@ telegram = TelegramService()
 result_checker = ResultCheckerService()
 gemini_summary = GeminiSummaryService()
 live_monitor = LiveMatchMonitorService()
+training_dataset_service = TrainingDatasetService()
+ml_training_service = MLTrainingService()
+odds_service = OddsService()
 
 scheduler_started = False
 
@@ -200,6 +210,58 @@ def job_send_afternoon_summary():
         print(f"[SCHEDULER] Erro ao enviar resumo da tarde/noite: {e}")
 
 
+def _refresh_clv_for_pending_predictions():
+    if not odds_service.is_available():
+        print("[CLV] OddsService indisponível. Pulando refresh de linha.")
+        return
+
+    pending = get_pending_predictions()
+    if not pending:
+        print("[CLV] Nenhuma previsão pendente para atualizar odds.")
+        return
+
+    updated = 0
+
+    for item in pending:
+        try:
+            fixture_id = str(item.get("fixture_id", ""))
+            league_name = item.get("league")
+            home_team = item.get("home_team")
+            away_team = item.get("away_team")
+            match_date = item.get("date", "")
+            pick = item.get("pick")
+
+            if not fixture_id or not league_name or not home_team or not away_team or not pick:
+                continue
+
+            odds = odds_service.get_match_odds(
+                home_team=home_team,
+                away_team=away_team,
+                league_name=league_name,
+                match_date=match_date,
+            )
+
+            if not odds:
+                continue
+
+            latest_market_odds = None
+            if pick == "1":
+                latest_market_odds = odds.get("home_odds")
+            elif pick == "X":
+                latest_market_odds = odds.get("draw_odds")
+            elif pick == "2":
+                latest_market_odds = odds.get("away_odds")
+
+            if latest_market_odds is not None:
+                update_prediction_market_odds(fixture_id, latest_market_odds)
+                updated += 1
+
+        except Exception as e:
+            print(f"[CLV] Erro atualizando linha de {item.get('fixture_id')}: {e}")
+
+    print(f"[CLV] Odds atualizadas em previsões pendentes: {updated}")
+
+
 def job_check_games():
     print(f"[SCHEDULER] Rodando verificação pré-jogo: {now_local()}")
 
@@ -212,6 +274,7 @@ def job_check_games():
 
     if not payloads:
         print("[SCHEDULER] Nenhum jogo elegível no momento.")
+        _refresh_clv_for_pending_predictions()
         return
 
     for payload in payloads:
@@ -242,6 +305,9 @@ def job_check_games():
 
         except Exception as e:
             print(f"[SCHEDULER] Erro no envio pré-jogo: {e}")
+
+    # após alertas, atualiza silenciosamente a linha dos jogos pendentes
+    _refresh_clv_for_pending_predictions()
 
 
 def job_check_results():
@@ -303,6 +369,17 @@ def job_monitor_live_matches():
         print(f"[LIVE] Erro geral no monitor live: {e}")
 
 
+def job_daily_training():
+    print(f"[TRAINING] Rodando treino diário: {now_local()}")
+
+    try:
+        training_dataset_service.append_resolved_predictions_to_dataset()
+        ml_training_service.train()
+        print("[TRAINING] Treino diário concluído com sucesso.")
+    except Exception as e:
+        print(f"[TRAINING] Erro no treino diário: {e}")
+
+
 def start_scheduler():
     global scheduler_started
 
@@ -327,6 +404,17 @@ def start_scheduler():
         hour=12,
         minute=30,
         id="job_send_afternoon_summary",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+
+    scheduler.add_job(
+        job_daily_training,
+        "cron",
+        hour=0,
+        minute=0,
+        id="job_daily_training",
         replace_existing=True,
         max_instances=1,
         coalesce=True,
@@ -367,7 +455,6 @@ def start_scheduler():
     scheduler_started = True
     print("[SCHEDULER] Iniciado com sucesso.")
 
-    # no startup, evita tempestade de requests:
     print("[SCHEDULER] Executando primeira verificação imediata de resultados...")
     job_check_results()
 

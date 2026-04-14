@@ -54,6 +54,33 @@ def _result_label(real_result: str, home_team: str, away_team: str) -> str:
     return str(real_result)
 
 
+def _get_pick_market_odds(analysis: dict):
+    odds = analysis.get("odds") or {}
+    pick = analysis.get("suggested_pick")
+
+    if pick == "1":
+        return odds.get("home_odds")
+    if pick == "X":
+        return odds.get("draw_odds")
+    if pick == "2":
+        return odds.get("away_odds")
+    return None
+
+
+def _get_pick_fair_odds(analysis: dict):
+    fair_odds = analysis.get("fair_odds") or {}
+    pick = analysis.get("suggested_pick")
+    return fair_odds.get(pick)
+
+
+def _get_pick_edge(analysis: dict):
+    details = (analysis.get("value_bet") or {}).get("details") or {}
+    pick = analysis.get("suggested_pick")
+    if details.get("market") == pick:
+        return details.get("edge")
+    return None
+
+
 def _format_odds(analysis: dict) -> list[str]:
     odds = analysis.get("odds")
     if not odds:
@@ -77,6 +104,19 @@ def _format_odds(analysis: dict) -> list[str]:
     return lines
 
 
+def _format_odds_comparison(analysis: dict) -> list[str]:
+    comparison = analysis.get("odds_comparison")
+    if not comparison:
+        return []
+
+    return [
+        "",
+        "⚖️ *Comparativo de Odds*",
+        f"• Odd justa do modelo: *{comparison.get('fair_odds'):.2f}*",
+        f"• Odd atual do mercado: *{comparison.get('current_odds'):.2f}*",
+    ]
+
+
 def _format_value_bet(analysis: dict) -> list[str]:
     value_bet = analysis.get("value_bet") or {}
     if not value_bet.get("has_value"):
@@ -90,11 +130,47 @@ def _format_value_bet(analysis: dict) -> list[str]:
         "",
         "💰 *Value Bet Detectado*",
         f"• Mercado: *{details.get('label')}* ({details.get('market')})",
-        f"• Odd: *{details.get('odds')}*",
+        f"• Odd atual: *{details.get('odds')}*",
+        f"• Odd justa: *{details.get('fair_odds')}*",
         f"• Prob. modelo: *{details.get('model_prob', 0):.0%}*",
         f"• Prob. implícita: *{details.get('implied_prob', 0):.0%}*",
         f"• Edge: *{details.get('edge', 0):.2%}*",
     ]
+
+
+def _format_clv(item: dict) -> list[str]:
+    clv = item.get("clv")
+    if not clv:
+        return []
+
+    open_odds = clv.get("opening_odds")
+    close_odds = clv.get("closing_odds")
+    movement = clv.get("movement")
+
+    if open_odds is None or close_odds is None:
+        return []
+
+    lines = [
+        "",
+        "📌 *Closing Line Value*",
+        f"• Odd no alerta: *{open_odds:.2f}*",
+        f"• Odd mais recente: *{close_odds:.2f}*",
+    ]
+
+    if movement is not None:
+        if movement > 0:
+            lines.append(f"• Movimento: *+{movement:.2f}*")
+        else:
+            lines.append(f"• Movimento: *{movement:.2f}*")
+
+    if close_odds < open_odds:
+        lines.append("• Leitura: *mercado confirmou o lado do bot*")
+    elif close_odds > open_odds:
+        lines.append("• Leitura: *mercado andou contra o lado do bot*")
+    else:
+        lines.append("• Leitura: *linha estável*")
+
+    return lines
 
 
 def format_prediction_message(payload: dict) -> str:
@@ -139,6 +215,7 @@ def format_prediction_message(payload: dict) -> str:
     ])
 
     lines.extend(_format_odds(analysis))
+    lines.extend(_format_odds_comparison(analysis))
     lines.extend(_format_value_bet(analysis))
 
     return "\n".join(lines)
@@ -153,6 +230,10 @@ def format_best_pick(payload: dict) -> str:
     local_time = _time_only(fixture["date"], fixture["time"])
     home_team = fixture["home_team"]
     away_team = fixture["away_team"]
+
+    market_odds = _get_pick_market_odds(analysis)
+    fair_odds = _get_pick_fair_odds(analysis)
+    edge = _get_pick_edge(analysis)
 
     lines = [
         "🔥 *APOSTA MAIS FORTE DO DIA*",
@@ -171,8 +252,17 @@ def format_best_pick(payload: dict) -> str:
         f"🧠 *Modelo:* {analysis.get('model_source', 'heuristic').upper()}",
     ]
 
+    if market_odds:
+        lines.append(f"📉 *Odd atual:* {market_odds:.2f}")
+
+    if fair_odds:
+        lines.append(f"⚖️ *Odd justa:* {fair_odds:.2f}")
+
+    if edge is not None:
+        lines.append(f"💰 *Edge:* {edge:.2%}")
+
     if analysis.get("value_bet", {}).get("has_value"):
-        lines.append("💰 *Tem value bet*")
+        lines.append("✅ *Value bet detectado*")
 
     return "\n".join(lines)
 
@@ -197,12 +287,25 @@ def format_top_ranking(payloads: list[dict], top_n: int = 5) -> str:
         home_team = fixture["home_team"]
         away_team = fixture["away_team"]
 
+        market_odds = _get_pick_market_odds(analysis)
+        edge = _get_pick_edge(analysis)
+
         lines.append(f"{marker} *{home_team} x {away_team}*{value_flag}")
         lines.append(f"{emoji} {league_name} • {_time_only(fixture['date'], fixture['time'])}")
         lines.append(
             f"Palpite: *{_pick_label(analysis['suggested_pick'])}* • "
             f"Confiança: *{_confidence_label(analysis['confidence'])}*"
         )
+
+        extras = []
+        if market_odds:
+            extras.append(f"Odd: *{market_odds:.2f}*")
+        if edge is not None:
+            extras.append(f"Edge: *{edge:.2%}*")
+
+        if extras:
+            lines.append(" • ".join(extras))
+
         lines.append("")
 
     return "\n".join(lines).strip()
@@ -230,6 +333,9 @@ def format_league_summary(league_name: str, payloads: list[dict]) -> str:
         home_team = fixture["home_team"]
         away_team = fixture["away_team"]
 
+        market_odds = _get_pick_market_odds(analysis)
+        edge = _get_pick_edge(analysis)
+
         lines.append(f"⚽ *{home_team} x {away_team}*{value_flag}")
         lines.append(f"🕒 {_time_only(fixture['date'], fixture['time'])}")
         lines.append(
@@ -239,6 +345,14 @@ def format_league_summary(league_name: str, payloads: list[dict]) -> str:
         lines.append(
             f"📈 {analysis['prob_home']:.0%} • {analysis['prob_draw']:.0%} • {analysis['prob_away']:.0%}"
         )
+
+        extras = []
+        if market_odds:
+            extras.append(f"Odd {market_odds:.2f}")
+        if edge is not None:
+            extras.append(f"Edge {edge:.2%}")
+        if extras:
+            lines.append(f"💹 {' | '.join(extras)}")
 
         if analysis.get("home_rank") and analysis.get("away_rank"):
             lines.append(f"📍 Tabela: #{analysis['home_rank']} vs #{analysis['away_rank']}")
@@ -274,6 +388,8 @@ def format_result_message(item: dict, ai_summary: str | None = None) -> str:
         f"🎯 *Resultado real:* {real_result}",
         f"🔒 *Confiança do modelo:* {_confidence_label(confidence)}",
     ]
+
+    lines.extend(_format_clv(item))
 
     if ai_summary:
         lines.extend([
