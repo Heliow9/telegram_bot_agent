@@ -3,6 +3,12 @@ from pathlib import Path
 from datetime import datetime
 from typing import Optional, Dict, List
 
+from app.services.prediction_store_db import (
+    save_prediction_db,
+    update_prediction_result_db,
+    update_prediction_market_odds_db,
+)
+
 
 STORE_PATH = Path("data/predictions_log.json")
 
@@ -77,6 +83,12 @@ def save_prediction(payload: dict):
         data.append(record)
         save_all_predictions(data)
 
+    # dual-write no banco
+    try:
+        save_prediction_db(payload)
+    except Exception as e:
+        print(f"[PREDICTION_STORE][DB] Erro ao salvar previsão no MySQL: {e}")
+
 
 def get_prediction_by_fixture_id(fixture_id: str) -> Optional[Dict]:
     data = load_predictions()
@@ -105,6 +117,16 @@ def update_prediction_result(
 
     save_all_predictions(data)
 
+    try:
+        update_prediction_result_db(
+            fixture_id=fixture_id,
+            result=result,
+            home_score=home_score,
+            away_score=away_score,
+        )
+    except Exception as e:
+        print(f"[PREDICTION_STORE][DB] Erro ao atualizar resultado no MySQL: {e}")
+
 
 def update_prediction_market_odds(
     fixture_id: str,
@@ -129,6 +151,14 @@ def update_prediction_market_odds(
             break
 
     save_all_predictions(data)
+
+    try:
+        update_prediction_market_odds_db(
+            fixture_id=fixture_id,
+            latest_market_odds=latest_market_odds,
+        )
+    except Exception as e:
+        print(f"[PREDICTION_STORE][DB] Erro ao atualizar odds no MySQL: {e}")
 
 
 def get_pending_predictions():

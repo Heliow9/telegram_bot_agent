@@ -1,10 +1,16 @@
 from typing import Optional, Dict
+
 from app.config import settings
+from app.services.runtime_config_service import load_runtime_config
 
 
 class ValueBetService:
     def __init__(self):
-        self.edge = settings.value_bet_edge
+        self.default_edge = settings.value_bet_edge
+
+    def _edge_threshold(self) -> float:
+        runtime = load_runtime_config()
+        return float(runtime.get("value_bet_edge", self.default_edge))
 
     @staticmethod
     def decimal_to_implied_prob(odds: Optional[float]) -> float:
@@ -22,6 +28,8 @@ class ValueBetService:
 
         if not odds:
             return result
+
+        threshold = self._edge_threshold()
 
         markets = {
             "1": {
@@ -63,12 +71,15 @@ class ValueBetService:
                     "implied_prob": round(implied, 4),
                     "odds": round(float(market_odds), 2),
                     "edge": round(edge, 4),
+                    "required_edge": round(threshold, 4),
                 }
 
-        if best_market and best_edge >= self.edge:
+        if best_market and best_edge >= threshold:
             result["has_value"] = True
             result["best_market"] = best_market
             result["edge"] = round(best_edge, 4)
+            result["details"] = best_details
+        else:
             result["details"] = best_details
 
         return result

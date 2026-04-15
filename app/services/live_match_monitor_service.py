@@ -2,9 +2,11 @@ from datetime import timedelta
 from typing import Dict, List, Optional
 
 from app.constants import LEAGUES
+from app.config import settings
 from app.services.gemini_summary_service import GeminiSummaryService
 from app.services.live_signal_service import LiveSignalService
 from app.services.live_state_service import LiveStateService
+from app.services.runtime_config_service import load_runtime_config
 from app.services.sportsdb_api import SportsDBAPI
 from app.services.telegram_service import TelegramService
 from app.services.time_utils import now_local
@@ -17,7 +19,35 @@ class LiveMatchMonitorService:
         self.gemini = GeminiSummaryService()
         self.state_service = LiveStateService()
         self.signal_service = LiveSignalService()
-        self.checkpoints = [15, 30, 45, 60, 75]
+
+    def _runtime(self) -> Dict:
+        return load_runtime_config()
+
+    def _checkpoints(self) -> List[int]:
+        runtime = self._runtime()
+        raw = runtime.get(
+            "live_minute_checkpoints",
+            settings.live_minute_checkpoints,
+        )
+
+        if isinstance(raw, list):
+            values = raw
+        else:
+            values = str(raw).split(",")
+
+        checkpoints = []
+        for item in values:
+            try:
+                value = int(str(item).strip())
+                if value > 0:
+                    checkpoints.append(value)
+            except Exception:
+                continue
+
+        if not checkpoints:
+            return [15, 30, 45, 60, 75]
+
+        return sorted(set(checkpoints))
 
     def _today_candidates(self) -> List[str]:
         today = now_local().date()
@@ -80,11 +110,15 @@ class LiveMatchMonitorService:
         status = (event.get("strStatus") or "").strip()
         return status if status else "Ao vivo"
 
-    def _checkpoint_to_send(self, elapsed: Optional[int], already_sent: List[int]) -> Optional[int]:
+    def _checkpoint_to_send(
+        self,
+        elapsed: Optional[int],
+        already_sent: List[int],
+    ) -> Optional[int]:
         if elapsed is None:
             return None
 
-        for checkpoint in self.checkpoints:
+        for checkpoint in self._checkpoints():
             if elapsed >= checkpoint and checkpoint not in already_sent:
                 return checkpoint
         return None
@@ -105,11 +139,14 @@ class LiveMatchMonitorService:
 
         elapsed = self._extract_elapsed(event)
         status_text = (event.get("strStatus") or "").strip()
-        signal, signal_reason = self.signal_service.evaluate({
-            "home_score": home_score,
-            "away_score": away_score,
-            "status_text": status_text,
-        })
+
+        signal, signal_reason = self.signal_service.evaluate(
+            {
+                "home_score": home_score,
+                "away_score": away_score,
+                "status_text": status_text,
+            }
+        )
 
         return {
             "fixture_id": str(event.get("idEvent", "")),
@@ -149,15 +186,18 @@ class LiveMatchMonitorService:
         if ai_text:
             text = (
                 f"⚽ {snapshot['league']}\n"
-                f"{snapshot['home_team']} {snapshot['home_score']} x {snapshot['away_score']} {snapshot['away_team']}\n\n"
+                f"{snapshot['home_team']} {snapshot['home_score']} x "
+                f"{snapshot['away_score']} {snapshot['away_team']}\n\n"
                 f"{ai_text}"
             )
         else:
             scoring_team = snapshot.get("scoring_team") or "Um dos times"
             text = (
                 f"⚽ {snapshot['league']}\n"
-                f"{snapshot['home_team']} {snapshot['home_score']} x {snapshot['away_score']} {snapshot['away_team']}\n\n"
-                f"Gol de {scoring_team}. Tempo de jogo: {snapshot.get('match_clock', 'Ao vivo')}."
+                f"{snapshot['home_team']} {snapshot['home_score']} x "
+                f"{snapshot['away_score']} {snapshot['away_team']}\n\n"
+                f"Gol de {scoring_team}. Tempo de jogo: "
+                f"{snapshot.get('match_clock', 'Ao vivo')}."
             )
 
         result = self.telegram.send_message(text)
@@ -175,13 +215,15 @@ class LiveMatchMonitorService:
         if ai_text:
             text = (
                 f"{signal_emoji} {snapshot['league']} | {checkpoint}'\n"
-                f"{snapshot['home_team']} {snapshot['home_score']} x {snapshot['away_score']} {snapshot['away_team']}\n\n"
+                f"{snapshot['home_team']} {snapshot['home_score']} x "
+                f"{snapshot['away_score']} {snapshot['away_team']}\n\n"
                 f"{ai_text}"
             )
         else:
             text = (
                 f"{signal_emoji} {snapshot['league']} | {checkpoint}'\n"
-                f"{snapshot['home_team']} {snapshot['home_score']} x {snapshot['away_score']} {snapshot['away_team']}\n\n"
+                f"{snapshot['home_team']} {snapshot['home_score']} x "
+                f"{snapshot['away_score']} {snapshot['away_team']}\n\n"
                 f"{snapshot.get('signal_reason', 'Sem leitura forte no momento.')}"
             )
 
@@ -195,7 +237,10 @@ class LiveMatchMonitorService:
         for league_meta in LEAGUES:
             for date_str in self._today_candidates():
                 try:
-                    events = self.api.get_events_by_day_list(date_str, league_meta["name"])
+                    events = self.api.get_events_by_day_list(
+                        date_str,
+                        league_meta["name"],
+                    )
                     for event in events:
                         event_id = str(event.get("idEvent", ""))
                         if not event_id or event_id in seen_ids:
@@ -204,7 +249,10 @@ class LiveMatchMonitorService:
                         event["_league_meta"] = league_meta
                         all_events.append(event)
                 except Exception as e:
-                    print(f"[LIVE] Erro buscando eventos {league_meta['display_name']} em {date_str}: {e}")
+                    print(
+                        f"[LIVE] Erro buscando eventos "
+                        f"{league_meta['display_name']} em {date_str}: {e}"
+                    )
 
         return all_events
 
@@ -217,7 +265,10 @@ class LiveMatchMonitorService:
             if self._is_live_status(status_text):
                 live_events.append(event)
 
-        print(f"[LIVE] Jogos candidatos: {len(candidate_events)} | ao vivo detectados: {len(live_events)}")
+        print(
+            f"[LIVE] Jogos candidatos: {len(candidate_events)} | "
+            f"ao vivo detectados: {len(live_events)}"
+        )
 
         for event in live_events:
             try:
@@ -240,15 +291,26 @@ class LiveMatchMonitorService:
                 current_score = snapshot.get("score_signature")
 
                 if previous and previous_score != current_score:
-                    snapshot["scoring_team"] = self._guess_scoring_team(previous, snapshot)
+                    snapshot["scoring_team"] = self._guess_scoring_team(
+                        previous,
+                        snapshot,
+                    )
                     self._send_goal_alert(snapshot)
 
-                checkpoint = self._checkpoint_to_send(snapshot.get("elapsed"), sent_checkpoints)
+                checkpoint = self._checkpoint_to_send(
+                    snapshot.get("elapsed"),
+                    sent_checkpoints,
+                )
                 if checkpoint is not None:
                     self._send_checkpoint_alert(snapshot, checkpoint)
-                    snapshot["sent_checkpoints"] = sorted(set(sent_checkpoints + [checkpoint]))
+                    snapshot["sent_checkpoints"] = sorted(
+                        set(sent_checkpoints + [checkpoint])
+                    )
 
                 self.state_service.update_fixture_state(fixture_id, snapshot)
 
             except Exception as e:
-                print(f"[LIVE] Erro no monitoramento do evento {event.get('idEvent')}: {e}")
+                print(
+                    f"[LIVE] Erro no monitoramento do evento "
+                    f"{event.get('idEvent')}: {e}"
+                )

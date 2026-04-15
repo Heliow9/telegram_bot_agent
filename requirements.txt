@@ -6,8 +6,13 @@ apscheduler
 pydantic
 httpx
 pytest
-google-genai  
+google-genai
 scikit-learn
 joblib
 pandas
 numpy
+sqlalchemy
+pymysql
+python-jose[cryptography]
+passlib[bcrypt]
+email-validator

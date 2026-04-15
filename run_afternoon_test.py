@@ -1,12 +1,12 @@
 from app.services.daily_leagues_service import DailyLeaguesService
 from app.services.telegram_service import TelegramService
 from app.services.message_formatter import (
-    format_prediction_message,
     format_best_pick,
     format_top_ranking,
     format_league_summary,
     group_payloads_by_league,
 )
+from app.services.prediction_store import save_prediction
 
 print("🚀 TESTE MANUAL - PRÉ-JOGO TARDE/NOITE\n")
 
@@ -18,26 +18,30 @@ try:
     print(f"📊 Jogos encontrados: {len(payloads)}")
 except Exception as e:
     print(f"❌ Erro ao buscar jogos: {e}")
-    exit()
+    raise SystemExit(1)
 
-# 🚫 fallback se não tiver jogos
 if not payloads:
     print("📭 Nenhum jogo encontrado para hoje.")
     telegram.send_message(
         "📭 *Nenhum jogo encontrado para a tarde/noite hoje.*\n\n"
         "Ligas monitoradas: Brasileirão, Premier League, Champions, etc."
     )
-    exit()
+    raise SystemExit(0)
 
-# 🔥 Melhor pick
+print("\n💾 Persistindo previsões...")
+for payload in payloads:
+    try:
+        save_prediction(payload)
+    except Exception as e:
+        fixture = payload.get("fixture", {})
+        print(f"❌ Erro ao salvar fixture={fixture.get('id')}: {e}")
+
 print("\n🔥 Enviando melhor aposta...")
 telegram.send_message(format_best_pick(payloads[0]))
 
-# 📊 Top ranking
 print("📊 Enviando top ranking...")
 telegram.send_message(format_top_ranking(payloads, top_n=5))
 
-# 🏆 Agrupar por liga
 grouped = group_payloads_by_league(payloads)
 
 desired_order = [
@@ -53,7 +57,6 @@ desired_order = [
     "Copa Sul-Americana",
 ]
 
-# 📨 Enviar por liga
 print("\n📨 Enviando resumos por liga...")
 for league_name in desired_order:
     league_payloads = grouped.get(league_name, [])
@@ -66,3 +69,4 @@ for league_name in desired_order:
     )
 
 print("\n✅ TESTE FINALIZADO COM SUCESSO")
+print("ℹ️ Depois que os jogos terminarem, rode: python check_results.py")

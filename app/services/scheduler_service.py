@@ -22,9 +22,11 @@ from app.services.training_dataset_service import TrainingDatasetService
 from app.services.ml_training_service import MLTrainingService
 from app.services.odds_service import OddsService
 from app.services.prediction_store import (
+    save_prediction,
     get_pending_predictions,
     update_prediction_market_odds,
 )
+from app.services.runtime_config_service import load_runtime_config
 
 
 scheduler = BackgroundScheduler(timezone="America/Recife")
@@ -42,6 +44,10 @@ scheduler_started = False
 ALERT_STORE_PATH = Path("data/sent_alerts.json")
 RESULT_STORE_PATH = Path("data/sent_results.json")
 SUMMARY_STORE_PATH = Path("data/sent_summaries.json")
+
+
+def _runtime_config():
+    return load_runtime_config()
 
 
 def _ensure_json_store(path: Path):
@@ -111,7 +117,30 @@ def _already_sent_summary(summary_key: str) -> bool:
     return summary_key in _load_sent_summaries()
 
 
+def _persist_payloads(payloads: list[dict], source_label: str):
+    saved = 0
+
+    for payload in payloads:
+        try:
+            save_prediction(payload)
+            saved += 1
+        except Exception as e:
+            fixture = payload.get("fixture", {})
+            fixture_id = fixture.get("id", "sem_id")
+            print(
+                f"[SCHEDULER] Erro ao persistir previsão "
+                f"({source_label}) fixture={fixture_id}: {e}"
+            )
+
+    print(
+        f"[SCHEDULER] Persistência concluída ({source_label}). "
+        f"Payloads processados: {saved}"
+    )
+
+
 def _send_ranked_summary(payloads: list[dict], period_label: str):
+    _persist_payloads(payloads, period_label)
+
     best_result = telegram.send_message(format_best_pick(payloads[0]))
     print(f"[SCHEDULER] Melhor aposta enviada ({period_label}): {best_result}")
 
@@ -288,6 +317,11 @@ def job_check_games():
                 print(f"[SCHEDULER] Jogo sem fixture_id: {home_team} x {away_team}")
                 continue
 
+            try:
+                save_prediction(payload)
+            except Exception as e:
+                print(f"[SCHEDULER] Erro ao persistir pré-jogo {fixture_id}: {e}")
+
             alert_key = f"{fixture_id}_30min"
 
             if _already_sent_alert(alert_key):
@@ -299,7 +333,10 @@ def job_check_games():
 
             if result.get("ok"):
                 _save_sent_alert(alert_key)
-                print(f"[SCHEDULER] Pré-jogo enviado com sucesso: {home_team} x {away_team}")
+                print(
+                    f"[SCHEDULER] Pré-jogo enviado com sucesso: "
+                    f"{home_team} x {away_team}"
+                )
             else:
                 print(f"[SCHEDULER] Falha no envio Telegram: {result}")
 
@@ -357,7 +394,12 @@ def job_check_results():
 
 
 def job_monitor_live_matches():
-    if not settings.live_monitor_enabled:
+    runtime = _runtime_config()
+    live_enabled = bool(
+        runtime.get("live_monitor_enabled", settings.live_monitor_enabled)
+    )
+
+    if not live_enabled:
         print("[LIVE] Monitor live desativado por configuração.")
         return
 
@@ -385,6 +427,17 @@ def start_scheduler():
     if scheduler_started:
         print("[SCHEDULER] Já iniciado, ignorando nova inicialização.")
         return
+
+    runtime = _runtime_config()
+    live_enabled = bool(
+        runtime.get("live_monitor_enabled", settings.live_monitor_enabled)
+    )
+    live_interval_seconds = int(
+        runtime.get(
+            "live_monitor_interval_seconds",
+            settings.live_monitor_interval_seconds,
+        )
+    )
 
     scheduler.add_job(
         job_send_morning_summary,
@@ -419,7 +472,6 @@ def start_scheduler():
         coalesce=True,
     )
 
-    # Pré-jogo agora roda a cada 1 minuto para acertar melhor a janela real
     scheduler.add_job(
         job_check_games,
         "interval",
@@ -440,11 +492,11 @@ def start_scheduler():
         coalesce=True,
     )
 
-    if settings.live_monitor_enabled:
+    if live_enabled:
         scheduler.add_job(
             job_monitor_live_matches,
             "interval",
-            seconds=settings.live_monitor_interval_seconds,
+            seconds=live_interval_seconds,
             id="job_monitor_live_matches",
             replace_existing=True,
             max_instances=1,
@@ -460,5 +512,5 @@ def start_scheduler():
 
     print("[SCHEDULER] Primeira verificação de pré-jogo ficará para o próximo ciclo de 1 minuto.")
 
-    if settings.live_monitor_enabled:
+    if live_enabled:
         print("[SCHEDULER] Monitor live habilitado e aguardando próximo ciclo normal.")
