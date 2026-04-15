@@ -1,3 +1,5 @@
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
@@ -7,13 +9,30 @@ from app.schemas import LoginRequest, TokenResponse, UserOut
 from app.auth import verify_password, create_access_token
 from app.deps import get_current_user
 
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
 @router.post("/login", response_model=TokenResponse)
 def login(payload: LoginRequest, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.email == payload.email, User.is_active.is_(True)).first()
+    password_len = (
+        len(payload.password.encode("utf-8"))
+        if isinstance(payload.password, str)
+        else None
+    )
+
+    logger.info(
+        "Tentativa de login | email=%s | password_bytes_len=%s",
+        payload.email,
+        password_len,
+    )
+
+    user = (
+        db.query(User)
+        .filter(User.email == payload.email, User.is_active.is_(True))
+        .first()
+    )
 
     if not user or not verify_password(payload.password, user.password_hash):
         raise HTTPException(
