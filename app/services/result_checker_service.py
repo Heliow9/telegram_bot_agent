@@ -63,7 +63,11 @@ class ResultCheckerService:
 
         return mapping.get(value, value.upper())
 
-    def _result_from_scores(self, home_score: Optional[int], away_score: Optional[int]) -> Optional[str]:
+    def _result_from_scores(
+        self,
+        home_score: Optional[int],
+        away_score: Optional[int],
+    ) -> Optional[str]:
         if home_score is None or away_score is None:
             return None
         if home_score > away_score:
@@ -223,9 +227,6 @@ class ResultCheckerService:
             except Exception as e:
                 print(f"[RESULT CHECKER] Erro em get_event_details({fixture_id}): {e}")
 
-            print(f"[RESULT CHECKER] Retorno result API: {result_data}")
-            print(f"[RESULT CHECKER] Retorno details API: {event_details}")
-
             merged = self._merge_result_sources(
                 fixture_id=fixture_id,
                 result_data=result_data,
@@ -276,8 +277,8 @@ class ResultCheckerService:
                 "home_score": merged["home_score"],
                 "away_score": merged["away_score"],
                 "status": "hit" if str(item.get("pick")) == str(merged["result"]) else "miss",
-                "home_badge": event_details.get("strHomeTeamBadge"),
-                "away_badge": event_details.get("strAwayTeamBadge"),
+                "home_badge": event_details.get("strHomeTeamBadge") if event_details else None,
+                "away_badge": event_details.get("strAwayTeamBadge") if event_details else None,
             })
 
             print(

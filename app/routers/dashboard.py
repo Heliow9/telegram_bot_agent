@@ -1,7 +1,11 @@
+from datetime import datetime, time, timedelta
+from zoneinfo import ZoneInfo
+
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import func, case, desc
 
+from app.config import settings
 from app.db import get_db
 from app.models import Prediction, PredictionOdds
 from app.schemas import DashboardSummaryResponse, PredictionListResponse
@@ -11,40 +15,133 @@ from app.deps import get_current_user
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
 
-@router.get("/summary", response_model=DashboardSummaryResponse)
+def _utc_naive_day_bounds():
+    """
+    Como o sistema salva checked_at/created_at usando datetime.utcnow() (naive UTC),
+    calculamos o início e fim do dia na timezone local e convertemos para UTC naive.
+    """
+    tz = ZoneInfo(settings.timezone)
+    now_local = datetime.now(tz)
+
+    start_local = datetime.combine(now_local.date(), time.min, tzinfo=tz)
+    end_local = start_local + timedelta(days=1)
+
+    start_utc_naive = start_local.astimezone(ZoneInfo("UTC")).replace(tzinfo=None)
+    end_utc_naive = end_local.astimezone(ZoneInfo("UTC")).replace(tzinfo=None)
+
+    return start_utc_naive, end_utc_naive
+
+
+@router.get("/summary")
 def dashboard_summary(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
     total_predictions = db.query(func.count(Prediction.id)).scalar() or 0
-    resolved_predictions = db.query(func.count(Prediction.id)).filter(
-        Prediction.status.in_(["hit", "miss"])
-    ).scalar() or 0
 
-    hits = db.query(func.count(Prediction.id)).filter(Prediction.status == "hit").scalar() or 0
-    misses = db.query(func.count(Prediction.id)).filter(Prediction.status == "miss").scalar() or 0
-    pending_predictions = db.query(func.count(Prediction.id)).filter(Prediction.status == "pending").scalar() or 0
+    resolved_predictions = (
+        db.query(func.count(Prediction.id))
+        .filter(Prediction.status.in_(["hit", "miss"]))
+        .scalar()
+        or 0
+    )
 
-    high_confidence_predictions = db.query(func.count(Prediction.id)).filter(
-        Prediction.confidence == "alta"
-    ).scalar() or 0
+    hits = (
+        db.query(func.count(Prediction.id))
+        .filter(Prediction.status == "hit")
+        .scalar()
+        or 0
+    )
 
-    value_bets = db.query(func.count(PredictionOdds.id)).filter(
-        PredictionOdds.has_value_bet.is_(True)
-    ).scalar() or 0
+    misses = (
+        db.query(func.count(Prediction.id))
+        .filter(Prediction.status == "miss")
+        .scalar()
+        or 0
+    )
+
+    pending_predictions = (
+        db.query(func.count(Prediction.id))
+        .filter(Prediction.status == "pending")
+        .scalar()
+        or 0
+    )
+
+    high_confidence_predictions = (
+        db.query(func.count(Prediction.id))
+        .filter(Prediction.confidence == "alta")
+        .scalar()
+        or 0
+    )
+
+    value_bets = (
+        db.query(func.count(PredictionOdds.id))
+        .filter(PredictionOdds.has_value_bet.is_(True))
+        .scalar()
+        or 0
+    )
 
     accuracy = round(hits / resolved_predictions, 4) if resolved_predictions else 0.0
 
-    return DashboardSummaryResponse(
-        total_predictions=total_predictions,
-        resolved_predictions=resolved_predictions,
-        hits=hits,
-        misses=misses,
-        accuracy=accuracy,
-        pending_predictions=pending_predictions,
-        high_confidence_predictions=high_confidence_predictions,
-        value_bets=value_bets,
+    # ===== RESUMO DO DIA BASEADO EM checked_at =====
+    start_utc, end_utc = _utc_naive_day_bounds()
+
+    today_resolved_predictions = (
+        db.query(func.count(Prediction.id))
+        .filter(
+            Prediction.status.in_(["hit", "miss"]),
+            Prediction.checked_at.is_not(None),
+            Prediction.checked_at >= start_utc,
+            Prediction.checked_at < end_utc,
+        )
+        .scalar()
+        or 0
     )
+
+    today_hits = (
+        db.query(func.count(Prediction.id))
+        .filter(
+            Prediction.status == "hit",
+            Prediction.checked_at.is_not(None),
+            Prediction.checked_at >= start_utc,
+            Prediction.checked_at < end_utc,
+        )
+        .scalar()
+        or 0
+    )
+
+    today_misses = (
+        db.query(func.count(Prediction.id))
+        .filter(
+            Prediction.status == "miss",
+            Prediction.checked_at.is_not(None),
+            Prediction.checked_at >= start_utc,
+            Prediction.checked_at < end_utc,
+        )
+        .scalar()
+        or 0
+    )
+
+    today_accuracy = (
+        round(today_hits / today_resolved_predictions, 4)
+        if today_resolved_predictions
+        else 0.0
+    )
+
+    return {
+        "total_predictions": total_predictions,
+        "resolved_predictions": resolved_predictions,
+        "hits": hits,
+        "misses": misses,
+        "accuracy": accuracy,
+        "pending_predictions": pending_predictions,
+        "high_confidence_predictions": high_confidence_predictions,
+        "value_bets": value_bets,
+        "today_resolved_predictions": today_resolved_predictions,
+        "today_hits": today_hits,
+        "today_misses": today_misses,
+        "today_accuracy": today_accuracy,
+    }
 
 
 @router.get("/predictions", response_model=PredictionListResponse)
@@ -152,26 +249,30 @@ def market_overview(
             elif movement > 0:
                 movement_direction = "up"
 
-        items.append({
-            "prediction_id": prediction.id,
-            "fixture_id": prediction.fixture_id,
-            "league_name": prediction.league_name,
-            "home_team": prediction.home_team,
-            "away_team": prediction.away_team,
-            "pick": prediction.pick,
-            "status": prediction.status,
-            "bookmaker": odds.bookmaker,
-            "opening_market_odds": odds.opening_market_odds,
-            "latest_market_odds": odds.latest_market_odds,
-            "fair_home_odds": odds.fair_home_odds,
-            "fair_draw_odds": odds.fair_draw_odds,
-            "fair_away_odds": odds.fair_away_odds,
-            "edge": odds.edge,
-            "has_value_bet": odds.has_value_bet,
-            "movement": movement,
-            "movement_direction": movement_direction,
-            "created_at": prediction.created_at.isoformat() if prediction.created_at else None,
-        })
+        items.append(
+            {
+                "prediction_id": prediction.id,
+                "fixture_id": prediction.fixture_id,
+                "league_name": prediction.league_name,
+                "home_team": prediction.home_team,
+                "away_team": prediction.away_team,
+                "pick": prediction.pick,
+                "status": prediction.status,
+                "bookmaker": odds.bookmaker,
+                "opening_market_odds": odds.opening_market_odds,
+                "latest_market_odds": odds.latest_market_odds,
+                "fair_home_odds": odds.fair_home_odds,
+                "fair_draw_odds": odds.fair_draw_odds,
+                "fair_away_odds": odds.fair_away_odds,
+                "edge": odds.edge,
+                "has_value_bet": odds.has_value_bet,
+                "movement": movement,
+                "movement_direction": movement_direction,
+                "created_at": prediction.created_at.isoformat()
+                if prediction.created_at
+                else None,
+            }
+        )
 
     total = db.query(func.count(PredictionOdds.id)).scalar() or 0
 
@@ -204,13 +305,15 @@ def model_performance(
         )
         conf_accuracy = round(conf_hits / total, 4) if total else 0.0
 
-        by_confidence.append({
-            "confidence": confidence,
-            "total": total,
-            "hits": conf_hits,
-            "misses": total - conf_hits,
-            "accuracy": conf_accuracy,
-        })
+        by_confidence.append(
+            {
+                "confidence": confidence,
+                "total": total,
+                "hits": conf_hits,
+                "misses": total - conf_hits,
+                "accuracy": conf_accuracy,
+            }
+        )
 
     league_rows = (
         db.query(
@@ -232,13 +335,15 @@ def model_performance(
         league_misses = int(row.misses or 0)
         league_accuracy = round(league_hits / total, 4) if total else 0.0
 
-        by_league.append({
-            "league_name": row.league_name or "Sem liga",
-            "total": total,
-            "hits": league_hits,
-            "misses": league_misses,
-            "accuracy": league_accuracy,
-        })
+        by_league.append(
+            {
+                "league_name": row.league_name or "Sem liga",
+                "total": total,
+                "hits": league_hits,
+                "misses": league_misses,
+                "accuracy": league_accuracy,
+            }
+        )
 
     return {
         "summary": {

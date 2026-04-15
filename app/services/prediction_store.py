@@ -35,11 +35,22 @@ def save_all_predictions(data: List[Dict]):
     )
 
 
+def _normalize_fixture_id(value) -> str:
+    return str(value or "").strip()
+
+
 def save_prediction(payload: dict):
     data = load_predictions()
 
-    analysis = payload["analysis"]
-    odds = analysis.get("odds")
+    fixture = payload.get("fixture") or {}
+    analysis = payload.get("analysis") or {}
+    league = payload.get("league") or {}
+
+    fixture_id = _normalize_fixture_id(fixture.get("id"))
+    if not fixture_id:
+        raise ValueError(f"Payload sem fixture.id válido: {payload}")
+
+    odds = analysis.get("odds") or {}
     suggested_pick = analysis.get("suggested_pick")
 
     opening_market_odds = None
@@ -53,17 +64,17 @@ def save_prediction(payload: dict):
 
     record = {
         "saved_at": datetime.utcnow().isoformat(),
-        "league": payload["league"]["display_name"],
-        "fixture_id": payload["fixture"]["id"],
-        "home_team": payload["fixture"]["home_team"],
-        "away_team": payload["fixture"]["away_team"],
-        "date": payload["fixture"]["date"],
-        "time": payload["fixture"]["time"],
-        "pick": analysis["suggested_pick"],
-        "prob_home": round(analysis["prob_home"], 4),
-        "prob_draw": round(analysis["prob_draw"], 4),
-        "prob_away": round(analysis["prob_away"], 4),
-        "confidence": analysis["confidence"],
+        "league": league.get("display_name"),
+        "fixture_id": fixture_id,
+        "home_team": fixture.get("home_team"),
+        "away_team": fixture.get("away_team"),
+        "date": fixture.get("date"),
+        "time": fixture.get("time"),
+        "pick": suggested_pick,
+        "prob_home": round(float(analysis.get("prob_home", 0.0)), 4),
+        "prob_draw": round(float(analysis.get("prob_draw", 0.0)), 4),
+        "prob_away": round(float(analysis.get("prob_away", 0.0)), 4),
+        "confidence": analysis.get("confidence"),
         "result": None,
         "home_score": None,
         "away_score": None,
@@ -78,12 +89,18 @@ def save_prediction(payload: dict):
         "clv": None,
     }
 
-    already_exists = any(item.get("fixture_id") == record["fixture_id"] for item in data)
+    already_exists = any(
+        _normalize_fixture_id(item.get("fixture_id")) == fixture_id
+        for item in data
+    )
+
     if not already_exists:
         data.append(record)
         save_all_predictions(data)
+        print(f"[PREDICTION_STORE] JSON salvo | fixture_id={fixture_id}")
+    else:
+        print(f"[PREDICTION_STORE] JSON já existe | fixture_id={fixture_id}")
 
-    # dual-write no banco
     try:
         save_prediction_db(payload)
     except Exception as e:
@@ -91,9 +108,10 @@ def save_prediction(payload: dict):
 
 
 def get_prediction_by_fixture_id(fixture_id: str) -> Optional[Dict]:
+    fixture_id = _normalize_fixture_id(fixture_id)
     data = load_predictions()
     for item in data:
-        if str(item.get("fixture_id")) == str(fixture_id):
+        if _normalize_fixture_id(item.get("fixture_id")) == fixture_id:
             return item
     return None
 
@@ -104,18 +122,24 @@ def update_prediction_result(
     home_score: int,
     away_score: int,
 ):
+    fixture_id = _normalize_fixture_id(fixture_id)
     data = load_predictions()
+    updated = False
 
     for item in data:
-        if str(item.get("fixture_id")) == str(fixture_id):
+        if _normalize_fixture_id(item.get("fixture_id")) == fixture_id:
             item["result"] = result
             item["home_score"] = home_score
             item["away_score"] = away_score
             item["checked_at"] = datetime.utcnow().isoformat()
-            item["status"] = "hit" if item.get("pick") == result else "miss"
+            item["status"] = "hit" if str(item.get("pick")) == str(result) else "miss"
+            updated = True
             break
 
-    save_all_predictions(data)
+    if updated:
+        save_all_predictions(data)
+    else:
+        print(f"[PREDICTION_STORE] Resultado sem item no JSON | fixture_id={fixture_id}")
 
     try:
         update_prediction_result_db(
@@ -135,10 +159,12 @@ def update_prediction_market_odds(
     if latest_market_odds is None:
         return
 
+    fixture_id = _normalize_fixture_id(fixture_id)
     data = load_predictions()
+    updated = False
 
     for item in data:
-        if str(item.get("fixture_id")) == str(fixture_id):
+        if _normalize_fixture_id(item.get("fixture_id")) == fixture_id:
             item["latest_market_odds"] = latest_market_odds
 
             opening = item.get("opening_market_odds")
@@ -148,9 +174,11 @@ def update_prediction_market_odds(
                     "closing_odds": round(float(latest_market_odds), 2),
                     "movement": round(float(latest_market_odds) - float(opening), 2),
                 }
+            updated = True
             break
 
-    save_all_predictions(data)
+    if updated:
+        save_all_predictions(data)
 
     try:
         update_prediction_market_odds_db(
@@ -214,4 +242,4 @@ def build_stats() -> Dict:
         "accuracy": round(accuracy, 4),
         "by_confidence": by_confidence,
         "by_league": by_league,
-    }
+    }   

@@ -33,6 +33,30 @@ def save_prediction_db(payload: dict):
         existing = db.query(Prediction).filter(Prediction.fixture_id == fixture_id).first()
         if existing:
             print(f"[DB] Prediction já existe para fixture_id={fixture_id}")
+
+            odds = analysis.get("odds") or {}
+            fair_odds = analysis.get("fair_odds") or {}
+            value_bet = analysis.get("value_bet") or {}
+
+            if existing.odds is None and (odds or fair_odds or value_bet):
+                prediction_odds = PredictionOdds(
+                    prediction_id=existing.id,
+                    bookmaker=odds.get("bookmaker"),
+                    home_odds=odds.get("home_odds"),
+                    draw_odds=odds.get("draw_odds"),
+                    away_odds=odds.get("away_odds"),
+                    fair_home_odds=fair_odds.get("1"),
+                    fair_draw_odds=fair_odds.get("X"),
+                    fair_away_odds=fair_odds.get("2"),
+                    opening_market_odds=_pick_market_odds(analysis),
+                    latest_market_odds=_pick_market_odds(analysis),
+                    edge=value_bet.get("edge"),
+                    has_value_bet=bool(value_bet.get("has_value")),
+                )
+                db.add(prediction_odds)
+                db.commit()
+                print(f"[DB] Odds vinculadas à prediction existente | fixture_id={fixture_id}")
+
             return
 
         print(
@@ -49,7 +73,7 @@ def save_prediction_db(payload: dict):
             away_team=fixture.get("away_team"),
             match_date=fixture.get("date"),
             match_time=fixture.get("time"),
-            pick=analysis.get("suggested_pick"),  # 1 / X / 2
+            pick=analysis.get("suggested_pick"),
             prob_home=float(analysis.get("prob_home", 0.0)),
             prob_draw=float(analysis.get("prob_draw", 0.0)),
             prob_away=float(analysis.get("prob_away", 0.0)),
@@ -118,7 +142,7 @@ def update_prediction_result_db(
             print(f"[DB] Prediction não encontrada para fixture_id={fixture_id}")
             return
 
-        item.result = result           # 1 / X / 2
+        item.result = result
         item.home_score = home_score
         item.away_score = away_score
         item.checked_at = datetime.utcnow()
