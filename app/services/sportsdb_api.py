@@ -17,7 +17,7 @@ class SportsDBAPI:
 
         # cache curto para aliviar chamadas repetidas
         self.default_cache_ttl_seconds = 120
-        self.event_details_cache_ttl_seconds = 60
+        self.event_details_cache_ttl_seconds = 15
         self.table_cache_ttl_seconds = 600
         self.team_form_cache_ttl_seconds = 300
 
@@ -92,6 +92,60 @@ class SportsDBAPI:
             "event": [],
             "table": [],
         }
+
+    def _safe_int(self, value) -> Optional[int]:
+        try:
+            if value is None or value == "":
+                return None
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    def _normalize_status(self, status: Optional[str]) -> str:
+        return str(status or "").strip().lower()
+
+    def _is_finished_status(self, status: Optional[str]) -> bool:
+        normalized = self._normalize_status(status)
+
+        if not normalized:
+            return False
+
+        exact_statuses = {
+            "ft",
+            "aet",
+            "pen",
+            "full time",
+            "match finished",
+            "after extra time",
+            "after penalties",
+            "finished",
+        }
+
+        if normalized in exact_statuses:
+            return True
+
+        if "finished" in normalized:
+            return True
+
+        return False
+
+    def _is_not_started_status(self, status: Optional[str]) -> bool:
+        normalized = self._normalize_status(status)
+        return normalized in {
+            "ns",
+            "not started",
+            "scheduled",
+        }
+
+    def _build_result_from_scores(self, home_score: Optional[int], away_score: Optional[int]) -> Optional[str]:
+        if home_score is None or away_score is None:
+            return None
+
+        if home_score > away_score:
+            return "1"
+        if home_score < away_score:
+            return "2"
+        return "X"
 
     def _get(
         self,
@@ -312,7 +366,18 @@ class SportsDBAPI:
 
     def get_event_details(self, event_id: str) -> Optional[Dict[str, Any]]:
         data = self.event_by_id(event_id)
-        return self.get_first_event(data)
+
+        if not data or data.get("error"):
+            print(f"[SportsDBAPI] get_event_details sem dados para event_id={event_id} | payload={data}")
+            return None
+
+        event = self.get_first_event(data)
+
+        if not event:
+            print(f"[SportsDBAPI] get_event_details evento não encontrado para event_id={event_id} | payload={data}")
+            return None
+
+        return event
 
     def get_team_last_events_list_limited(self, team_id: str, limit: int = 10) -> List[Dict[str, Any]]:
         events = self.get_team_last_events_list(team_id)
@@ -333,68 +398,26 @@ class SportsDBAPI:
         if not event:
             return None
 
-        status_text = (event.get("strStatus") or "").strip().upper()
-        home_score = event.get("intHomeScore")
-        away_score = event.get("intAwayScore")
+        raw_status = event.get("strStatus")
+        status_text = (raw_status or "").strip()
+        home_score = self._safe_int(event.get("intHomeScore"))
+        away_score = self._safe_int(event.get("intAwayScore"))
 
-        finished_statuses = {
-            "FT",
-            "AET",
-            "PEN",
-            "FULL TIME",
-            "MATCH FINISHED",
-            "AFTER EXTRA TIME",
-            "AFTER PENALTIES",
-            "FINISHED",
-        }
+        finished = self._is_finished_status(raw_status)
 
-        is_finished = status_text in finished_statuses
+        # fallback: se existe placar e não está explicitamente "Not Started",
+        # geralmente esse evento já passou do pré-jogo
+        if not finished and home_score is not None and away_score is not None:
+            if not self._is_not_started_status(raw_status):
+                finished = True
 
-        if home_score is None or away_score is None:
-            return {
-                "fixture_id": event_id,
-                "finished": False,
-                "home_score": None,
-                "away_score": None,
-                "result": None,
-                "status_text": status_text,
-            }
-
-        try:
-            home_score = int(home_score)
-            away_score = int(away_score)
-        except (TypeError, ValueError):
-            return {
-                "fixture_id": event_id,
-                "finished": False,
-                "home_score": None,
-                "away_score": None,
-                "result": None,
-                "status_text": status_text,
-            }
-
-        if not is_finished:
-            return {
-                "fixture_id": event_id,
-                "finished": False,
-                "home_score": home_score,
-                "away_score": away_score,
-                "result": None,
-                "status_text": status_text,
-            }
-
-        if home_score > away_score:
-            result = "1"
-        elif home_score < away_score:
-            result = "2"
-        else:
-            result = "X"
+        result = self._build_result_from_scores(home_score, away_score) if finished else None
 
         return {
-            "fixture_id": event_id,
-            "finished": True,
+            "fixture_id": str(event_id),
+            "finished": finished,
             "home_score": home_score,
             "away_score": away_score,
             "result": result,
-            "status_text": status_text,
+            "status_text": status_text.upper(),
         }

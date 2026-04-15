@@ -22,15 +22,24 @@ def _pick_market_odds(analysis: dict) -> Optional[float]:
 def save_prediction_db(payload: dict):
     db = SessionLocal()
     try:
-        fixture_id = str(payload["fixture"]["id"])
+        fixture = payload.get("fixture") or {}
+        analysis = payload.get("analysis") or {}
+        league = payload.get("league") or {}
+
+        fixture_id = str(fixture.get("id", "")).strip()
+        if not fixture_id:
+            raise ValueError(f"Payload sem fixture.id válido: {payload}")
 
         existing = db.query(Prediction).filter(Prediction.fixture_id == fixture_id).first()
         if existing:
+            print(f"[DB] Prediction já existe para fixture_id={fixture_id}")
             return
 
-        analysis = payload["analysis"]
-        fixture = payload["fixture"]
-        league = payload["league"]
+        print(
+            f"[DB] Salvando prediction | fixture_id={fixture_id} | "
+            f"{fixture.get('home_team')} x {fixture.get('away_team')} | "
+            f"pick={analysis.get('suggested_pick')}"
+        )
 
         prediction = Prediction(
             fixture_id=fixture_id,
@@ -40,7 +49,7 @@ def save_prediction_db(payload: dict):
             away_team=fixture.get("away_team"),
             match_date=fixture.get("date"),
             match_time=fixture.get("time"),
-            pick=analysis.get("suggested_pick"),
+            pick=analysis.get("suggested_pick"),  # 1 / X / 2
             prob_home=float(analysis.get("prob_home", 0.0)),
             prob_draw=float(analysis.get("prob_draw", 0.0)),
             prob_away=float(analysis.get("prob_away", 0.0)),
@@ -50,9 +59,10 @@ def save_prediction_db(payload: dict):
             result=None,
             home_score=None,
             away_score=None,
-            features_json=json.dumps(analysis.get("features"), ensure_ascii=False)
-            if analysis.get("features") is not None
-            else None,
+            features_json=json.dumps(
+                analysis.get("features"),
+                ensure_ascii=False
+            ) if analysis.get("features") is not None else None,
             created_at=datetime.utcnow(),
             checked_at=None,
         )
@@ -82,9 +92,11 @@ def save_prediction_db(payload: dict):
             db.add(prediction_odds)
 
         db.commit()
+        print(f"[DB] Prediction salva com sucesso | fixture_id={fixture_id}")
 
-    except Exception:
+    except Exception as e:
         db.rollback()
+        print(f"[DB] Erro ao salvar prediction: {e}")
         raise
     finally:
         db.close()
@@ -98,20 +110,31 @@ def update_prediction_result_db(
 ):
     db = SessionLocal()
     try:
-        item = db.query(Prediction).filter(Prediction.fixture_id == str(fixture_id)).first()
+        fixture_id = str(fixture_id).strip()
+        result = str(result).strip().upper()
+
+        item = db.query(Prediction).filter(Prediction.fixture_id == fixture_id).first()
         if not item:
+            print(f"[DB] Prediction não encontrada para fixture_id={fixture_id}")
             return
 
-        item.result = result
+        item.result = result           # 1 / X / 2
         item.home_score = home_score
         item.away_score = away_score
         item.checked_at = datetime.utcnow()
-        item.status = "hit" if item.pick == result else "miss"
+        item.status = "hit" if str(item.pick).strip().upper() == result else "miss"
 
         db.commit()
 
-    except Exception:
+        print(
+            f"[DB] Resultado atualizado | fixture_id={fixture_id} | "
+            f"pick={item.pick} | result={result} | "
+            f"placar={home_score}x{away_score} | status={item.status}"
+        )
+
+    except Exception as e:
         db.rollback()
+        print(f"[DB] Erro ao atualizar resultado fixture_id={fixture_id}: {e}")
         raise
     finally:
         db.close()
@@ -153,6 +176,7 @@ def get_prediction_db_by_fixture_id(fixture_id: str) -> Optional[Dict]:
             "result": item.result,
             "home_score": item.home_score,
             "away_score": item.away_score,
+            "pick": item.pick,
         }
     finally:
         db.close()

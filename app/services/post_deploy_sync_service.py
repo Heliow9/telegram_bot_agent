@@ -1,214 +1,162 @@
-from pathlib import Path
-import json
+from datetime import datetime
+from zoneinfo import ZoneInfo
+from typing import Dict, List, Optional, Set
 
 from app.services.daily_leagues_service import DailyLeaguesService
-from app.services.prediction_store import save_prediction
-from app.services.result_checker_service import ResultCheckerService
-from app.services.telegram_service import TelegramService
-from app.services.message_formatter import (
-    format_result_message,
-    pick_winner_photo_url,
+from app.services.prediction_store import (
+    save_prediction,
+    get_pending_predictions,
 )
-from app.services.gemini_summary_service import GeminiSummaryService
-from app.services.time_utils import now_local
-
-
-SYNC_STATE_PATH = Path("data/post_deploy_sync_state.json")
-POST_DEPLOY_RESULTS_SENT_PATH = Path("data/post_deploy_results_sent.json")
+from app.services.result_checker_service import ResultCheckerService
 
 
 class PostDeploySyncService:
     def __init__(self):
         self.daily_service = DailyLeaguesService()
         self.result_checker = ResultCheckerService()
-        self.telegram = TelegramService()
-        self.gemini_summary = GeminiSummaryService()
+        self.tz = ZoneInfo("America/Recife")
 
-    def _ensure_state_file(self):
-        SYNC_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        if not SYNC_STATE_PATH.exists():
-            SYNC_STATE_PATH.write_text(
-                json.dumps({"last_run_date": None}, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
+    def _today(self) -> str:
+        return datetime.now(self.tz).strftime("%Y-%m-%d")
 
-    def _ensure_results_sent_file(self):
-        POST_DEPLOY_RESULTS_SENT_PATH.parent.mkdir(parents=True, exist_ok=True)
-        if not POST_DEPLOY_RESULTS_SENT_PATH.exists():
-            POST_DEPLOY_RESULTS_SENT_PATH.write_text("[]", encoding="utf-8")
+    def _fixture_date(self, payload: Dict) -> str:
+        fixture = payload.get("fixture") or {}
+        return str(fixture.get("date") or "").strip()
 
-    def _load_state(self) -> dict:
-        self._ensure_state_file()
-        try:
-            return json.loads(SYNC_STATE_PATH.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            return {"last_run_date": None}
+    def _fixture_id(self, payload: Dict) -> str:
+        fixture = payload.get("fixture") or {}
+        return str(fixture.get("id") or "").strip()
 
-    def _save_state(self, state: dict):
-        self._ensure_state_file()
-        SYNC_STATE_PATH.write_text(
-            json.dumps(state, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+    def _fixture_label(self, payload: Dict) -> str:
+        fixture = payload.get("fixture") or {}
+        home = fixture.get("home_team", "Casa")
+        away = fixture.get("away_team", "Fora")
+        return f"{home} x {away}"
 
-    def _load_sent_results(self) -> list[str]:
-        self._ensure_results_sent_file()
-        try:
-            data = json.loads(POST_DEPLOY_RESULTS_SENT_PATH.read_text(encoding="utf-8"))
-            return data if isinstance(data, list) else []
-        except json.JSONDecodeError:
-            return []
+    def _is_payload_for_today(self, payload: Dict) -> bool:
+        fixture_date = self._fixture_date(payload)
+        today = self._today()
+        return fixture_date == today
 
-    def _save_sent_results(self, data: list[str]):
-        self._ensure_results_sent_file()
-        POST_DEPLOY_RESULTS_SENT_PATH.write_text(
-            json.dumps(data, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+    def _deduplicate_payloads(self, payloads: List[Dict]) -> List[Dict]:
+        unique: List[Dict] = []
+        seen_ids: Set[str] = set()
 
-    def _already_sent_result(self, result_key: str) -> bool:
-        return result_key in self._load_sent_results()
+        for payload in payloads:
+            fixture_id = self._fixture_id(payload)
+            if not fixture_id:
+                print(f"[POST_DEPLOY_SYNC] Jogo ignorado sem fixture_id: {self._fixture_label(payload)}")
+                continue
 
-    def _mark_result_sent(self, result_key: str):
-        data = self._load_sent_results()
-        if result_key not in data:
-            data.append(result_key)
-            self._save_sent_results(data)
+            if fixture_id in seen_ids:
+                continue
 
-    def should_run_today(self) -> bool:
-        today_str = now_local().strftime("%Y-%m-%d")
-        state = self._load_state()
-        return state.get("last_run_date") != today_str
+            seen_ids.add(fixture_id)
+            unique.append(payload)
 
-    def mark_ran_today(self):
-        today_str = now_local().strftime("%Y-%m-%d")
-        self._save_state({"last_run_date": today_str})
+        return unique
 
-    def _collect_today_payloads(self) -> list[dict]:
-        all_payloads = []
+    def _filter_payloads_for_today(self, payloads: List[Dict]) -> List[Dict]:
+        today = self._today()
+        filtered: List[Dict] = []
 
-        try:
-            morning_payloads = self.daily_service.get_morning_payloads()
-            print(
-                f"[POST_DEPLOY_SYNC] Jogos da manhã encontrados: "
-                f"{len(morning_payloads)}"
-            )
-            all_payloads.extend(morning_payloads)
-        except Exception as e:
-            print(f"[POST_DEPLOY_SYNC] Erro ao buscar jogos da manhã: {e}")
+        for payload in payloads:
+            fixture_id = self._fixture_id(payload)
+            fixture_date = self._fixture_date(payload)
+            label = self._fixture_label(payload)
 
-        try:
-            afternoon_payloads = self.daily_service.get_afternoon_payloads()
-            print(
-                f"[POST_DEPLOY_SYNC] Jogos da tarde/noite encontrados: "
-                f"{len(afternoon_payloads)}"
-            )
-            all_payloads.extend(afternoon_payloads)
-        except Exception as e:
-            print(f"[POST_DEPLOY_SYNC] Erro ao buscar jogos da tarde/noite: {e}")
+            if not fixture_date:
+                print(
+                    f"[POST_DEPLOY_SYNC] Ignorando sem data | "
+                    f"fixture_id={fixture_id} | jogo={label}"
+                )
+                continue
 
-        unique_payloads = {}
-        for payload in all_payloads:
-            fixture = payload.get("fixture", {})
-            fixture_id = str(fixture.get("id", "")).strip()
-            if fixture_id:
-                unique_payloads[fixture_id] = payload
+            if fixture_date != today:
+                print(
+                    f"[POST_DEPLOY_SYNC] Ignorando fora do dia local | "
+                    f"fixture_id={fixture_id} | jogo={label} | "
+                    f"fixture_date={fixture_date} | today={today}"
+                )
+                continue
 
-        return list(unique_payloads.values())
+            filtered.append(payload)
 
-    def _persist_payloads(self, payloads: list[dict]) -> int:
-        persisted = 0
+        return filtered
+
+    def _load_today_payloads(self) -> List[Dict]:
+        morning_payloads = self.daily_service.get_morning_payloads()
+        print(f"[POST_DEPLOY_SYNC] Jogos da manhã encontrados: {len(morning_payloads)}")
+
+        afternoon_payloads = self.daily_service.get_afternoon_payloads()
+        print(f"[POST_DEPLOY_SYNC] Jogos da tarde/noite encontrados: {len(afternoon_payloads)}")
+
+        all_payloads = morning_payloads + afternoon_payloads
+        all_payloads = self._deduplicate_payloads(all_payloads)
+        all_payloads = self._filter_payloads_for_today(all_payloads)
+
+        print(f"[POST_DEPLOY_SYNC] Total de jogos únicos válidos hoje: {len(all_payloads)}")
+        return all_payloads
+
+    def _persist_payloads(self, payloads: List[Dict]) -> int:
+        processed = 0
 
         for payload in payloads:
             try:
-                save_prediction(payload)
-                persisted += 1
-            except Exception as e:
-                fixture = payload.get("fixture", {})
+                fixture_id = self._fixture_id(payload)
+                label = self._fixture_label(payload)
+                fixture_date = self._fixture_date(payload)
+
                 print(
-                    "[POST_DEPLOY_SYNC] Erro ao salvar "
-                    f"fixture={fixture.get('id')} | "
+                    f"[POST_DEPLOY_SYNC] Persistindo | "
+                    f"fixture_id={fixture_id} | jogo={label} | data={fixture_date}"
+                )
+
+                save_prediction(payload)
+                processed += 1
+
+            except Exception as e:
+                fixture = payload.get("fixture") or {}
+                print(
+                    f"[POST_DEPLOY_SYNC] Erro ao persistir "
                     f"{fixture.get('home_team')} x {fixture.get('away_team')}: {e}"
                 )
 
-        return persisted
+        print(f"[POST_DEPLOY_SYNC] Persistência concluída. Jogos processados: {processed}")
+        return processed
 
-    def _send_result_to_telegram(self, item: dict):
-        fixture_id = str(item.get("fixture_id", ""))
-        result_key = f"{fixture_id}_post_deploy_result"
+    def _run_result_check(self) -> List[Dict]:
+        pending = get_pending_predictions()
+        print(f"[POST_DEPLOY_SYNC] Pendentes antes da checagem: {len(pending)}")
 
-        if not fixture_id:
-            return
+        updates = self.result_checker.check_pending_predictions()
+        print(f"[POST_DEPLOY_SYNC] Jogos finalizados encontrados: {len(updates)}")
 
-        if self._already_sent_result(result_key):
-            print(
-                f"[POST_DEPLOY_SYNC] Resultado já enviado anteriormente no pós-deploy: "
-                f"{fixture_id}"
-            )
-            return
-
-        try:
-            ai_summary = self.gemini_summary.build_result_summary(item)
-            caption = format_result_message(item, ai_summary=ai_summary)
-            photo_url = pick_winner_photo_url(item)
-
-            if photo_url:
-                result = self.telegram.send_photo(photo_url, caption=caption)
-            else:
-                result = self.telegram.send_message(caption)
-
-            print(f"[POST_DEPLOY_SYNC] Retorno Telegram: {result}")
-
-            if result.get("ok"):
-                self._mark_result_sent(result_key)
+        if not updates:
+            print("[POST_DEPLOY_SYNC] Nenhum resultado novo encontrado.")
+        else:
+            for item in updates:
                 print(
-                    "[POST_DEPLOY_SYNC] Resultado enviado com sucesso: "
+                    f"[POST_DEPLOY_SYNC] Resultado atualizado | "
                     f"{item.get('home_team')} x {item.get('away_team')} | "
-                    f"{item.get('status')}"
+                    f"placar={item.get('home_score')}x{item.get('away_score')} | "
+                    f"resultado={item.get('real_result')} | "
+                    f"status={item.get('status')}"
                 )
-            else:
-                print(f"[POST_DEPLOY_SYNC] Falha ao enviar resultado: {result}")
 
-        except Exception as e:
-            print(f"[POST_DEPLOY_SYNC] Erro ao enviar resultado no Telegram: {e}")
+        return updates
 
-    def run_once(self):
-        if not self.should_run_today():
-            print("[POST_DEPLOY_SYNC] Já executado hoje. Ignorando nova execução.")
-            return
-
+    def run(self) -> Dict:
         print("[POST_DEPLOY_SYNC] Iniciando sincronização pós-deploy...")
 
-        payloads = self._collect_today_payloads()
-        print(
-            f"[POST_DEPLOY_SYNC] Total de jogos únicos encontrados hoje: "
-            f"{len(payloads)}"
-        )
+        payloads = self._load_today_payloads()
+        processed = self._persist_payloads(payloads)
+        updates = self._run_result_check()
 
-        persisted = self._persist_payloads(payloads)
-        print(
-            f"[POST_DEPLOY_SYNC] Persistência concluída. "
-            f"Jogos processados: {persisted}"
-        )
-
-        try:
-            updates = self.result_checker.check_pending_predictions()
-            print(f"[POST_DEPLOY_SYNC] Jogos finalizados encontrados: {len(updates)}")
-
-            if updates:
-                for item in updates:
-                    print(
-                        "[POST_DEPLOY_SYNC] Resolvido: "
-                        f"{item.get('home_team')} x {item.get('away_team')} | "
-                        f"Placar: {item.get('home_score')} x {item.get('away_score')} | "
-                        f"Status: {item.get('status')}"
-                    )
-                    self._send_result_to_telegram(item)
-            else:
-                print("[POST_DEPLOY_SYNC] Nenhum resultado novo encontrado.")
-
-        except Exception as e:
-            print(f"[POST_DEPLOY_SYNC] Erro ao checar resultados: {e}")
-
-        self.mark_ran_today()
         print("[POST_DEPLOY_SYNC] Sincronização pós-deploy finalizada com sucesso.")
+
+        return {
+            "success": True,
+            "processed": processed,
+            "updated_results": len(updates),
+        }
