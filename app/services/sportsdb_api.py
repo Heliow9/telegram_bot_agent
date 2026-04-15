@@ -15,13 +15,11 @@ class SportsDBAPI:
         self.base_url = settings.sportsdb_base_url.rstrip("/")
         self.api_key = settings.sportsdb_api_key
 
-        # cache curto para aliviar chamadas repetidas
         self.default_cache_ttl_seconds = 120
         self.event_details_cache_ttl_seconds = 15
         self.table_cache_ttl_seconds = 600
         self.team_form_cache_ttl_seconds = 300
 
-        # rate limit defensivo para plano free
         self.min_interval_between_requests_seconds = 1.2
         self.cooldown_on_429_seconds = 20.0
 
@@ -73,7 +71,9 @@ class SportsDBAPI:
                 sleep_time = SportsDBAPI._next_allowed_request_ts - now
                 time.sleep(sleep_time)
 
-            SportsDBAPI._next_allowed_request_ts = time.time() + self.min_interval_between_requests_seconds
+            SportsDBAPI._next_allowed_request_ts = (
+                time.time() + self.min_interval_between_requests_seconds
+            )
 
     def _register_429_cooldown(self):
         with self._request_lock:
@@ -121,23 +121,13 @@ class SportsDBAPI:
             "finished",
         }
 
-        if normalized in exact_statuses:
-            return True
+        return normalized in exact_statuses
 
-        if "finished" in normalized:
-            return True
-
-        return False
-
-    def _is_not_started_status(self, status: Optional[str]) -> bool:
-        normalized = self._normalize_status(status)
-        return normalized in {
-            "ns",
-            "not started",
-            "scheduled",
-        }
-
-    def _build_result_from_scores(self, home_score: Optional[int], away_score: Optional[int]) -> Optional[str]:
+    def _build_result_from_scores(
+        self,
+        home_score: Optional[int],
+        away_score: Optional[int],
+    ) -> Optional[str]:
         if home_score is None or away_score is None:
             return None
 
@@ -403,13 +393,9 @@ class SportsDBAPI:
         home_score = self._safe_int(event.get("intHomeScore"))
         away_score = self._safe_int(event.get("intAwayScore"))
 
+        # CORREÇÃO CRÍTICA:
+        # só considera finalizado se o status for explicitamente final
         finished = self._is_finished_status(raw_status)
-
-        # fallback: se existe placar e não está explicitamente "Not Started",
-        # geralmente esse evento já passou do pré-jogo
-        if not finished and home_score is not None and away_score is not None:
-            if not self._is_not_started_status(raw_status):
-                finished = True
 
         result = self._build_result_from_scores(home_score, away_score) if finished else None
 

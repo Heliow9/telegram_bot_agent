@@ -18,12 +18,24 @@ class ResultCheckerService:
         "full time",
         "penalties",
         "pen",
+        "after penalties",
     }
 
     NOT_STARTED_STATUSES = {
         "not started",
         "ns",
         "scheduled",
+    }
+
+    LIVE_STATUSES = {
+        "1h",
+        "2h",
+        "ht",
+        "half time",
+        "live",
+        "in play",
+        "break",
+        "et",
     }
 
     def __init__(self):
@@ -63,11 +75,7 @@ class ResultCheckerService:
 
         return mapping.get(value, value.upper())
 
-    def _result_from_scores(
-        self,
-        home_score: Optional[int],
-        away_score: Optional[int],
-    ) -> Optional[str]:
+    def _result_from_scores(self, home_score: Optional[int], away_score: Optional[int]) -> Optional[str]:
         if home_score is None or away_score is None:
             return None
         if home_score > away_score:
@@ -93,30 +101,17 @@ class ResultCheckerService:
             if normalized in self.FINISHED_STATUSES:
                 return True
 
+            if normalized in self.LIVE_STATUSES:
+                return False
+
+            if normalized in self.NOT_STARTED_STATUSES:
+                return False
+
             if "finished" in normalized:
                 return True
 
-            if normalized in {"ft", "aet", "pen"}:
-                return True
-
-        home_score = self._safe_int(
-            details.get("intHomeScore", details.get("home_score"))
-        )
-        away_score = self._safe_int(
-            details.get("intAwayScore", details.get("away_score"))
-        )
-
-        if home_score is not None and away_score is not None:
-            status = str(
-                details.get("strStatus")
-                or details.get("status")
-                or details.get("status_text")
-                or ""
-            ).strip().lower()
-
-            if status not in self.NOT_STARTED_STATUSES:
-                return True
-
+        # CORREÇÃO CRÍTICA:
+        # NUNCA concluir apenas porque existe placar.
         return False
 
     def _extract_result_from_details(self, details: Dict) -> Optional[Dict]:
@@ -130,12 +125,14 @@ class ResultCheckerService:
             details.get("intAwayScore", details.get("away_score"))
         )
 
-        result = (
-            self._normalize_result_code(details.get("result"))
-            or self._result_from_scores(home_score, away_score)
-        )
-
         finished = self._is_finished_from_details(details)
+
+        result = None
+        if finished:
+            result = (
+                self._normalize_result_code(details.get("result"))
+                or self._result_from_scores(home_score, away_score)
+            )
 
         return {
             "fixture_id": str(details.get("idEvent") or details.get("fixture_id") or ""),
@@ -179,14 +176,16 @@ class ResultCheckerService:
             else (detail_result or {}).get("away_score")
         )
 
-        merged_result = (
-            raw_result
-            or (detail_result or {}).get("result")
-            or self._result_from_scores(merged_home_score, merged_away_score)
-        )
-
         merged_finished = raw_finished or bool((detail_result or {}).get("finished"))
         merged_status = raw_status or (detail_result or {}).get("status_text")
+
+        merged_result = None
+        if merged_finished:
+            merged_result = (
+                raw_result
+                or (detail_result or {}).get("result")
+                or self._result_from_scores(merged_home_score, merged_away_score)
+            )
 
         return {
             "fixture_id": fixture_id,

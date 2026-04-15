@@ -8,7 +8,7 @@ from sqlalchemy import func, case, desc
 from app.config import settings
 from app.db import get_db
 from app.models import Prediction, PredictionOdds
-from app.schemas import DashboardSummaryResponse, PredictionListResponse
+from app.schemas import PredictionListResponse
 from app.deps import get_current_user
 
 
@@ -16,10 +16,6 @@ router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
 
 def _utc_naive_day_bounds():
-    """
-    Como o sistema salva checked_at/created_at usando datetime.utcnow() (naive UTC),
-    calculamos o início e fim do dia na timezone local e convertemos para UTC naive.
-    """
     tz = ZoneInfo(settings.timezone)
     now_local = datetime.now(tz)
 
@@ -30,6 +26,27 @@ def _utc_naive_day_bounds():
     end_utc_naive = end_local.astimezone(ZoneInfo("UTC")).replace(tzinfo=None)
 
     return start_utc_naive, end_utc_naive
+
+
+def _calculate_profit(status: str, opening_odds):
+    if opening_odds is None:
+        return None
+
+    try:
+        odd = float(opening_odds)
+    except (TypeError, ValueError):
+        return None
+
+    if odd <= 1:
+        return None
+
+    if status == "hit":
+        return round(odd - 1.0, 4)
+
+    if status == "miss":
+        return -1.0
+
+    return None
 
 
 @router.get("/summary")
@@ -83,7 +100,7 @@ def dashboard_summary(
 
     accuracy = round(hits / resolved_predictions, 4) if resolved_predictions else 0.0
 
-    # ===== RESUMO DO DIA BASEADO EM checked_at =====
+    # ===== RESOLVIDOS DO DIA =====
     start_utc, end_utc = _utc_naive_day_bounds()
 
     today_resolved_predictions = (
@@ -128,6 +145,43 @@ def dashboard_summary(
         else 0.0
     )
 
+    # ===== FINANCEIRO =====
+    resolved_with_odds = (
+        db.query(Prediction, PredictionOdds)
+        .outerjoin(PredictionOdds, PredictionOdds.prediction_id == Prediction.id)
+        .filter(Prediction.status.in_(["hit", "miss"]))
+        .all()
+    )
+
+    total_profit = 0.0
+    total_stake = 0.0
+    roi_count = 0
+
+    today_profit = 0.0
+    today_stake = 0.0
+    today_roi_count = 0
+
+    for prediction, odds in resolved_with_odds:
+        opening_odds = odds.opening_market_odds if odds else None
+        profit = _calculate_profit(prediction.status, opening_odds)
+
+        if profit is not None:
+            total_profit += profit
+            total_stake += 1.0
+            roi_count += 1
+
+            if (
+                prediction.checked_at is not None
+                and prediction.checked_at >= start_utc
+                and prediction.checked_at < end_utc
+            ):
+                today_profit += profit
+                today_stake += 1.0
+                today_roi_count += 1
+
+    roi = round(total_profit / total_stake, 4) if total_stake else 0.0
+    today_roi = round(today_profit / today_stake, 4) if today_stake else 0.0
+
     return {
         "total_predictions": total_predictions,
         "resolved_predictions": resolved_predictions,
@@ -141,6 +195,14 @@ def dashboard_summary(
         "today_hits": today_hits,
         "today_misses": today_misses,
         "today_accuracy": today_accuracy,
+        "profit": round(total_profit, 2),
+        "stake": round(total_stake, 2),
+        "roi": roi,
+        "roi_items": roi_count,
+        "today_profit": round(today_profit, 2),
+        "today_stake": round(today_stake, 2),
+        "today_roi": today_roi,
+        "today_roi_items": today_roi_count,
     }
 
 
@@ -287,63 +349,111 @@ def model_performance(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
-    resolved_query = db.query(Prediction).filter(Prediction.status.in_(["hit", "miss"]))
+    resolved_rows = (
+        db.query(Prediction, PredictionOdds)
+        .outerjoin(PredictionOdds, PredictionOdds.prediction_id == Prediction.id)
+        .filter(Prediction.status.in_(["hit", "miss"]))
+        .all()
+    )
 
-    resolved_total = resolved_query.count()
-    hits = resolved_query.filter(Prediction.status == "hit").count()
-    misses = resolved_query.filter(Prediction.status == "miss").count()
+    resolved_total = len(resolved_rows)
+    hits = sum(1 for prediction, _ in resolved_rows if prediction.status == "hit")
+    misses = sum(1 for prediction, _ in resolved_rows if prediction.status == "miss")
     accuracy = round(hits / resolved_total, 4) if resolved_total else 0.0
+
+    total_profit = 0.0
+    total_stake = 0.0
+
+    for prediction, odds in resolved_rows:
+        opening_odds = odds.opening_market_odds if odds else None
+        profit = _calculate_profit(prediction.status, opening_odds)
+        if profit is not None:
+            total_profit += profit
+            total_stake += 1.0
+
+    roi = round(total_profit / total_stake, 4) if total_stake else 0.0
 
     by_confidence = []
     for confidence in ["alta", "média", "baixa"]:
-        total = resolved_query.filter(Prediction.confidence == confidence).count()
-        conf_hits = (
-            resolved_query.filter(
-                Prediction.confidence == confidence,
-                Prediction.status == "hit",
-            ).count()
-        )
+        conf_rows = [
+            (prediction, odds)
+            for prediction, odds in resolved_rows
+            if prediction.confidence == confidence
+        ]
+
+        total = len(conf_rows)
+        conf_hits = sum(1 for prediction, _ in conf_rows if prediction.status == "hit")
+        conf_misses = sum(1 for prediction, _ in conf_rows if prediction.status == "miss")
         conf_accuracy = round(conf_hits / total, 4) if total else 0.0
+
+        conf_profit = 0.0
+        conf_stake = 0.0
+
+        for prediction, odds in conf_rows:
+            opening_odds = odds.opening_market_odds if odds else None
+            profit = _calculate_profit(prediction.status, opening_odds)
+            if profit is not None:
+                conf_profit += profit
+                conf_stake += 1.0
+
+        conf_roi = round(conf_profit / conf_stake, 4) if conf_stake else 0.0
 
         by_confidence.append(
             {
                 "confidence": confidence,
                 "total": total,
                 "hits": conf_hits,
-                "misses": total - conf_hits,
+                "misses": conf_misses,
                 "accuracy": conf_accuracy,
+                "profit": round(conf_profit, 2),
+                "stake": round(conf_stake, 2),
+                "roi": conf_roi,
             }
         )
 
-    league_rows = (
-        db.query(
-            Prediction.league_name.label("league_name"),
-            func.count(Prediction.id).label("total"),
-            func.sum(case((Prediction.status == "hit", 1), else_=0)).label("hits"),
-            func.sum(case((Prediction.status == "miss", 1), else_=0)).label("misses"),
-        )
-        .filter(Prediction.status.in_(["hit", "miss"]))
-        .group_by(Prediction.league_name)
-        .order_by(desc("total"))
-        .all()
-    )
+    league_map = {}
+
+    for prediction, odds in resolved_rows:
+        league_name = prediction.league_name or "Sem liga"
+
+        if league_name not in league_map:
+            league_map[league_name] = {
+                "league_name": league_name,
+                "total": 0,
+                "hits": 0,
+                "misses": 0,
+                "accuracy": 0.0,
+                "profit": 0.0,
+                "stake": 0.0,
+                "roi": 0.0,
+            }
+
+        league_map[league_name]["total"] += 1
+
+        if prediction.status == "hit":
+            league_map[league_name]["hits"] += 1
+        elif prediction.status == "miss":
+            league_map[league_name]["misses"] += 1
+
+        opening_odds = odds.opening_market_odds if odds else None
+        profit = _calculate_profit(prediction.status, opening_odds)
+        if profit is not None:
+            league_map[league_name]["profit"] += profit
+            league_map[league_name]["stake"] += 1.0
 
     by_league = []
-    for row in league_rows:
-        total = int(row.total or 0)
-        league_hits = int(row.hits or 0)
-        league_misses = int(row.misses or 0)
-        league_accuracy = round(league_hits / total, 4) if total else 0.0
+    for _, item in league_map.items():
+        total = item["total"]
+        hits_count = item["hits"]
+        stake = item["stake"]
 
-        by_league.append(
-            {
-                "league_name": row.league_name or "Sem liga",
-                "total": total,
-                "hits": league_hits,
-                "misses": league_misses,
-                "accuracy": league_accuracy,
-            }
-        )
+        item["accuracy"] = round(hits_count / total, 4) if total else 0.0
+        item["profit"] = round(item["profit"], 2)
+        item["stake"] = round(stake, 2)
+        item["roi"] = round(item["profit"] / stake, 4) if stake else 0.0
+        by_league.append(item)
+
+    by_league.sort(key=lambda x: x["total"], reverse=True)
 
     return {
         "summary": {
@@ -351,6 +461,9 @@ def model_performance(
             "hits": hits,
             "misses": misses,
             "accuracy": accuracy,
+            "profit": round(total_profit, 2),
+            "stake": round(total_stake, 2),
+            "roi": roi,
         },
         "by_confidence": by_confidence,
         "by_league": by_league,
