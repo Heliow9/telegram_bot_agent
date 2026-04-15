@@ -12,6 +12,8 @@ from app.routers.predictions import router as predictions_router
 from app.routers.auth import router as auth_router
 from app.routers.dashboard import router as dashboard_router
 from app.routers.settings import router as settings_router
+from app.services.scheduler_service import start_scheduler
+from app.services.post_deploy_sync_service import PostDeploySyncService
 
 logging.basicConfig(
     level=logging.INFO,
@@ -19,18 +21,55 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+_scheduler_started = False
+_post_deploy_sync_ran = False
+
+
+def safe_start_scheduler() -> None:
+    global _scheduler_started
+
+    if _scheduler_started:
+        logger.info("⏭️ Scheduler já havia sido iniciado. Ignorando nova inicialização.")
+        return
+
+    try:
+        start_scheduler()
+        _scheduler_started = True
+        logger.info("⏰ Scheduler iniciado com sucesso")
+    except Exception as e:
+        logger.exception("❌ Erro ao iniciar scheduler: %s", e)
+
+
+def safe_run_post_deploy_sync() -> None:
+    global _post_deploy_sync_ran
+
+    if _post_deploy_sync_ran:
+        logger.info("⏭️ Pós-deploy sync já executado nesta instância. Ignorando.")
+        return
+
+    try:
+        logger.info("🔄 Executando sincronização pós-deploy...")
+        service = PostDeploySyncService()
+        service.run_once()
+        _post_deploy_sync_ran = True
+        logger.info("✅ Sincronização pós-deploy concluída")
+    except Exception as e:
+        logger.exception("❌ Erro na sincronização pós-deploy: %s", e)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("🚀 Iniciando API...")
+    logger.info("🚀 Iniciando aplicação...")
     logger.info("📊 Ambiente: %s", settings.app_env)
 
-    # Mantém criação de tabelas aqui, pois é rápida e segura
     Base.metadata.create_all(bind=engine)
+
+    safe_run_post_deploy_sync()
+    safe_start_scheduler()
 
     yield
 
-    logger.info("🛑 Encerrando API...")
+    logger.info("🛑 Encerrando aplicação...")
 
 
 app = FastAPI(
@@ -43,7 +82,7 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:5173",
         "http://127.0.0.1:5173",
-        "https://bot-bet-front.onrender.com",
+        "https://bot-bet-front.onrender.com"
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -86,7 +125,8 @@ def root():
         "name": settings.app_name,
         "env": settings.app_env,
         "status": "running",
-        "mode": "api",
+        "scheduler_started": _scheduler_started,
+        "post_deploy_sync_ran": _post_deploy_sync_ran,
     }
 
 
@@ -96,7 +136,8 @@ def health():
         "status": "ok",
         "service": settings.app_name,
         "env": settings.app_env,
-        "mode": "api",
+        "scheduler_started": _scheduler_started,
+        "post_deploy_sync_ran": _post_deploy_sync_ran,
     }
 
 

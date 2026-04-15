@@ -333,7 +333,10 @@ def job_check_games():
 
             if result.get("ok"):
                 _save_sent_alert(alert_key)
-                print(f"[SCHEDULER] Pré-jogo enviado com sucesso: {home_team} x {away_team}")
+                print(
+                    f"[SCHEDULER] Pré-jogo enviado com sucesso: "
+                    f"{home_team} x {away_team}"
+                )
             else:
                 print(f"[SCHEDULER] Falha no envio Telegram: {result}")
 
@@ -445,7 +448,6 @@ def start_scheduler():
         replace_existing=True,
         max_instances=1,
         coalesce=True,
-        misfire_grace_time=120,
     )
 
     scheduler.add_job(
@@ -457,7 +459,6 @@ def start_scheduler():
         replace_existing=True,
         max_instances=1,
         coalesce=True,
-        misfire_grace_time=120,
     )
 
     scheduler.add_job(
@@ -469,7 +470,6 @@ def start_scheduler():
         replace_existing=True,
         max_instances=1,
         coalesce=True,
-        misfire_grace_time=600,
     )
 
     scheduler.add_job(
@@ -480,7 +480,6 @@ def start_scheduler():
         replace_existing=True,
         max_instances=1,
         coalesce=True,
-        misfire_grace_time=30,
     )
 
     scheduler.add_job(
@@ -491,7 +490,6 @@ def start_scheduler():
         replace_existing=True,
         max_instances=1,
         coalesce=True,
-        misfire_grace_time=120,
     )
 
     if live_enabled:
@@ -503,13 +501,16 @@ def start_scheduler():
             replace_existing=True,
             max_instances=1,
             coalesce=True,
-            misfire_grace_time=30,
         )
 
     scheduler.start()
     scheduler_started = True
     print("[SCHEDULER] Iniciado com sucesso.")
-    print("[SCHEDULER] Aguardando primeiro ciclo automático dos jobs...")
+
+    print("[SCHEDULER] Executando primeira verificação imediata de resultados...")
+    job_check_results()
+
+    print("[SCHEDULER] Primeira verificação de pré-jogo ficará para o próximo ciclo de 1 minuto.")
 
     if live_enabled:
         print("[SCHEDULER] Monitor live habilitado e aguardando próximo ciclo normal.")
