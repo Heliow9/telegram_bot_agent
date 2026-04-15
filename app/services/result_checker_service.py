@@ -75,6 +75,9 @@ class ResultCheckerService:
 
         return mapping.get(value, value.upper())
 
+    def _normalize_locked(self, value: Optional[str]) -> str:
+        return str(value or "").strip().lower()
+
     def _result_from_scores(self, home_score: Optional[int], away_score: Optional[int]) -> Optional[str]:
         if home_score is None or away_score is None:
             return None
@@ -85,6 +88,10 @@ class ResultCheckerService:
         return "X"
 
     def _is_finished_from_details(self, details: Dict) -> bool:
+        locked = self._normalize_locked(details.get("strLocked"))
+        if locked == "locked":
+            return True
+
         candidates = [
             details.get("strStatus"),
             details.get("strProgress"),
@@ -110,8 +117,25 @@ class ResultCheckerService:
             if "finished" in normalized:
                 return True
 
-        # CORREÇÃO CRÍTICA:
-        # NUNCA concluir apenas porque existe placar.
+        home_score = self._safe_int(
+            details.get("intHomeScore", details.get("home_score"))
+        )
+        away_score = self._safe_int(
+            details.get("intAwayScore", details.get("away_score"))
+        )
+
+        # fallback útil para SportsDB bugada
+        if home_score is not None and away_score is not None:
+            status = str(
+                details.get("strStatus")
+                or details.get("status")
+                or details.get("status_text")
+                or ""
+            ).strip().lower()
+
+            if status not in self.NOT_STARTED_STATUSES:
+                return True
+
         return False
 
     def _extract_result_from_details(self, details: Dict) -> Optional[Dict]:
@@ -146,6 +170,7 @@ class ResultCheckerService:
                 or details.get("status_text")
                 or details.get("status")
             ),
+            "locked": self._normalize_locked(details.get("strLocked")),
         }
 
     def _merge_result_sources(
@@ -194,6 +219,7 @@ class ResultCheckerService:
             "away_score": merged_away_score,
             "result": merged_result,
             "status_text": merged_status,
+            "locked": result_data.get("locked") or (detail_result or {}).get("locked"),
         }
 
     def check_pending_predictions(self) -> List[Dict]:
@@ -240,7 +266,7 @@ class ResultCheckerService:
             if not merged.get("finished"):
                 print(
                     f"[RESULT CHECKER] Ainda não finalizado: {fixture_id} | "
-                    f"status={merged.get('status_text')}"
+                    f"status={merged.get('status_text')} | locked={merged.get('locked')}"
                 )
                 continue
 

@@ -1,7 +1,10 @@
+import json
+from pathlib import Path
+from datetime import datetime
 from typing import Optional, Dict, List
 
 from app.db import SessionLocal
-from app.models import Prediction
+from app.models import Prediction, PredictionOdds
 from app.services.prediction_store_db import (
     save_prediction_db,
     update_prediction_result_db,
@@ -9,15 +12,126 @@ from app.services.prediction_store_db import (
 )
 
 
+STORE_PATH = Path("data/predictions_log.json")
+
+
+def ensure_store():
+    STORE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    if not STORE_PATH.exists():
+        STORE_PATH.write_text("[]", encoding="utf-8")
+
+
+def save_all_predictions(data: List[Dict]):
+    ensure_store()
+    STORE_PATH.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def _normalize_fixture_id(value) -> str:
+    return str(value or "").strip()
+
+
+def _sync_db_to_json():
+    """
+    Compatibilidade com serviços legados que ainda consomem JSON.
+    A fonte principal continua sendo o MySQL.
+    """
+    db = SessionLocal()
+    try:
+        rows = (
+            db.query(Prediction, PredictionOdds)
+            .outerjoin(PredictionOdds, PredictionOdds.prediction_id == Prediction.id)
+            .order_by(Prediction.created_at.desc())
+            .all()
+        )
+
+        data: List[Dict] = []
+
+        for prediction, odds in rows:
+            record = {
+                "saved_at": prediction.created_at.isoformat() if prediction.created_at else None,
+                "league": prediction.league_name,
+                "fixture_id": prediction.fixture_id,
+                "home_team": prediction.home_team,
+                "away_team": prediction.away_team,
+                "date": prediction.match_date,
+                "time": prediction.match_time,
+                "pick": prediction.pick,
+                "prob_home": round(float(prediction.prob_home or 0.0), 4),
+                "prob_draw": round(float(prediction.prob_draw or 0.0), 4),
+                "prob_away": round(float(prediction.prob_away or 0.0), 4),
+                "confidence": prediction.confidence,
+                "result": prediction.result,
+                "home_score": prediction.home_score,
+                "away_score": prediction.away_score,
+                "status": prediction.status,
+                "checked_at": prediction.checked_at.isoformat() if prediction.checked_at else None,
+                "features": None,
+                "model_source": prediction.model_source,
+                "odds_snapshot": {
+                    "bookmaker": odds.bookmaker if odds else None,
+                    "home_odds": odds.home_odds if odds else None,
+                    "draw_odds": odds.draw_odds if odds else None,
+                    "away_odds": odds.away_odds if odds else None,
+                } if odds else None,
+                "fair_odds_snapshot": {
+                    "1": odds.fair_home_odds if odds else None,
+                    "X": odds.fair_draw_odds if odds else None,
+                    "2": odds.fair_away_odds if odds else None,
+                } if odds else None,
+                "opening_market_odds": odds.opening_market_odds if odds else None,
+                "latest_market_odds": odds.latest_market_odds if odds else None,
+                "clv": (
+                    {
+                        "opening_odds": round(float(odds.opening_market_odds), 2),
+                        "closing_odds": round(float(odds.latest_market_odds), 2),
+                        "movement": round(
+                            float(odds.latest_market_odds) - float(odds.opening_market_odds),
+                            2,
+                        ),
+                    }
+                    if odds
+                    and odds.opening_market_odds is not None
+                    and odds.latest_market_odds is not None
+                    else None
+                ),
+            }
+
+            data.append(record)
+
+        save_all_predictions(data)
+        return data
+
+    finally:
+        db.close()
+
+
+def load_predictions() -> List[Dict]:
+    """
+    Compatibilidade legada:
+    agora o JSON é regenerado a partir do banco.
+    """
+    ensure_store()
+    return _sync_db_to_json()
+
+
 def save_prediction(payload: dict):
     """
     Fonte principal: MySQL.
+    Mantém JSON sincronizado para compatibilidade.
     """
     try:
         save_prediction_db(payload)
     except Exception as e:
         print(f"[PREDICTION_STORE][DB] Erro ao salvar previsão no MySQL: {e}")
         raise
+    finally:
+        try:
+            _sync_db_to_json()
+        except Exception as sync_error:
+            print(f"[PREDICTION_STORE][JSON] Erro ao sincronizar após save_prediction: {sync_error}")
 
 
 def get_prediction_by_fixture_id(fixture_id: str) -> Optional[Dict]:
@@ -71,6 +185,11 @@ def update_prediction_result(
     except Exception as e:
         print(f"[PREDICTION_STORE][DB] Erro ao atualizar resultado no MySQL: {e}")
         raise
+    finally:
+        try:
+            _sync_db_to_json()
+        except Exception as sync_error:
+            print(f"[PREDICTION_STORE][JSON] Erro ao sincronizar após update_prediction_result: {sync_error}")
 
 
 def update_prediction_market_odds(
@@ -88,6 +207,11 @@ def update_prediction_market_odds(
     except Exception as e:
         print(f"[PREDICTION_STORE][DB] Erro ao atualizar odds no MySQL: {e}")
         raise
+    finally:
+        try:
+            _sync_db_to_json()
+        except Exception as sync_error:
+            print(f"[PREDICTION_STORE][JSON] Erro ao sincronizar após update_prediction_market_odds: {sync_error}")
 
 
 def get_pending_predictions() -> List[Dict]:
