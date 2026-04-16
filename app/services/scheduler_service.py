@@ -1,8 +1,7 @@
 from apscheduler.schedulers.background import BackgroundScheduler
 from pathlib import Path
-from datetime import datetime
 import json
-import time
+from datetime import datetime, timezone
 
 from app.config import settings
 from app.services.daily_leagues_service import DailyLeaguesService
@@ -50,19 +49,6 @@ SUMMARY_STORE_PATH = Path("data/sent_summaries.json")
 
 def _runtime_config():
     return load_runtime_config()
-
-
-def _job_log_start(job_name: str):
-    started_at = time.perf_counter()
-    print(f"[JOB] START {job_name} | at={datetime.utcnow().isoformat()}Z")
-    return started_at
-
-
-def _job_log_end(job_name: str, started_at: float, **kwargs):
-    elapsed = round(time.perf_counter() - started_at, 2)
-    extra = " | ".join(f"{k}={v}" for k, v in kwargs.items())
-    suffix = f" | {extra}" if extra else ""
-    print(f"[JOB] END {job_name} | duration={elapsed}s{suffix}")
 
 
 def _ensure_json_store(path: Path):
@@ -132,6 +118,14 @@ def _already_sent_summary(summary_key: str) -> bool:
     return summary_key in _load_sent_summaries()
 
 
+def build_alert_key(fixture_id: str) -> str:
+    return f"{fixture_id}_30min"
+
+
+def build_result_key(fixture_id: str) -> str:
+    return f"{fixture_id}_result"
+
+
 def _persist_payloads(payloads: list[dict], source_label: str):
     saved = 0
 
@@ -168,8 +162,9 @@ def _send_ranked_summary(payloads: list[dict], period_label: str):
         "Brasileirão Série A",
         "Brasileirão Série B",
         "Premier League",
-        "Championship",
         "Liga dos Campeões",
+        "Liga Europa",
+        "Championship",
         "Argentina Liga Profesional",
         "Itália Série A",
         "Turquia Super Lig",
@@ -189,98 +184,80 @@ def _send_ranked_summary(payloads: list[dict], period_label: str):
 
 
 def job_send_morning_summary():
-    started = _job_log_start("job_send_morning_summary")
-    total_payloads = 0
-
     print(f"[SCHEDULER] Rodando resumo da manhã: {now_local()}")
 
     summary_key = f"{now_local().strftime('%Y-%m-%d')}_morning"
     if _already_sent_summary(summary_key):
         print("[SCHEDULER] Resumo da manhã já enviado hoje.")
-        _job_log_end("job_send_morning_summary", started, sent=False, reason="already_sent")
         return
 
     try:
         payloads = daily_service.get_morning_payloads()
-        total_payloads = len(payloads)
-        print(f"[SCHEDULER] Jogos encontrados para manhã: {total_payloads}")
+        print(f"[SCHEDULER] Jogos encontrados para manhã: {len(payloads)}")
     except Exception as e:
         print(f"[SCHEDULER] Erro ao buscar jogos da manhã: {e}")
-        _job_log_end("job_send_morning_summary", started, success=False, error="fetch_payloads")
         return
 
     if not payloads:
         result = telegram.send_message(
             "📭 *Nenhum jogo encontrado pela manhã hoje.*\n\n"
-            "Ligas monitoradas: Brasileirão A, Brasileirão B, Premier League, Championship, "
-            "Liga dos Campeões, Argentina Liga Profesional, Itália Série A, "
+            "Ligas monitoradas: Brasileirão A, Brasileirão B, Premier League, Liga dos Campeões, "
+            "Liga Europa, Championship, Argentina Liga Profesional, Itália Série A, "
             "Turquia Super Lig, Libertadores e Copa Sul-Americana."
         )
         print(f"[SCHEDULER] Aviso de manhã sem jogos enviado: {result}")
         _save_sent_summary(summary_key)
-        _job_log_end("job_send_morning_summary", started, success=True, payloads=0)
         return
 
     try:
         _send_ranked_summary(payloads, "manhã")
         _save_sent_summary(summary_key)
-        _job_log_end("job_send_morning_summary", started, success=True, payloads=total_payloads)
     except Exception as e:
         print(f"[SCHEDULER] Erro ao enviar resumo da manhã: {e}")
-        _job_log_end("job_send_morning_summary", started, success=False, payloads=total_payloads)
 
 
 def job_send_afternoon_summary():
-    started = _job_log_start("job_send_afternoon_summary")
-    total_payloads = 0
-
     print(f"[SCHEDULER] Rodando resumo da tarde/noite: {now_local()}")
 
     summary_key = f"{now_local().strftime('%Y-%m-%d')}_afternoon"
     if _already_sent_summary(summary_key):
         print("[SCHEDULER] Resumo da tarde/noite já enviado hoje.")
-        _job_log_end("job_send_afternoon_summary", started, sent=False, reason="already_sent")
         return
 
     try:
         payloads = daily_service.get_afternoon_payloads()
-        total_payloads = len(payloads)
-        print(f"[SCHEDULER] Jogos encontrados para tarde/noite: {total_payloads}")
+        print(f"[SCHEDULER] Jogos encontrados para tarde/noite: {len(payloads)}")
     except Exception as e:
         print(f"[SCHEDULER] Erro ao buscar jogos da tarde/noite: {e}")
-        _job_log_end("job_send_afternoon_summary", started, success=False, error="fetch_payloads")
         return
 
     if not payloads:
         result = telegram.send_message(
             "📭 *Nenhum jogo encontrado para a tarde/noite hoje.*\n\n"
-            "Ligas monitoradas: Brasileirão A, Brasileirão B, Premier League, Championship, "
-            "Liga dos Campeões, Argentina Liga Profesional, Itália Série A, "
+            "Ligas monitoradas: Brasileirão A, Brasileirão B, Premier League, Liga dos Campeões, "
+            "Liga Europa, Championship, Argentina Liga Profesional, Itália Série A, "
             "Turquia Super Lig, Libertadores e Copa Sul-Americana."
         )
         print(f"[SCHEDULER] Aviso de tarde/noite sem jogos enviado: {result}")
         _save_sent_summary(summary_key)
-        _job_log_end("job_send_afternoon_summary", started, success=True, payloads=0)
         return
 
     try:
         _send_ranked_summary(payloads, "tarde/noite")
         _save_sent_summary(summary_key)
-        _job_log_end("job_send_afternoon_summary", started, success=True, payloads=total_payloads)
     except Exception as e:
         print(f"[SCHEDULER] Erro ao enviar resumo da tarde/noite: {e}")
-        _job_log_end("job_send_afternoon_summary", started, success=False, payloads=total_payloads)
 
 
 def _refresh_clv_for_pending_predictions():
     if not odds_service.is_available():
         print("[CLV] OddsService indisponível. Pulando refresh de linha.")
-        return 0
+        return
 
     pending = get_pending_predictions()
     if not pending:
         print("[CLV] Nenhuma previsão pendente para atualizar odds.")
-        return 0
+        return
 
     updated = 0
 
@@ -322,29 +299,21 @@ def _refresh_clv_for_pending_predictions():
             print(f"[CLV] Erro atualizando linha de {item.get('fixture_id')}: {e}")
 
     print(f"[CLV] Odds atualizadas em previsões pendentes: {updated}")
-    return updated
 
 
 def job_check_games():
-    started = _job_log_start("job_check_games")
-    total_payloads = 0
-    sent_alerts = 0
-
     print(f"[SCHEDULER] Rodando verificação pré-jogo: {now_local()}")
 
     try:
         payloads = daily_service.get_30min_payloads()
-        total_payloads = len(payloads)
-        print(f"[SCHEDULER] Jogos encontrados na janela dos 30 min: {total_payloads}")
+        print(f"[SCHEDULER] Jogos encontrados na janela dos 30 min: {len(payloads)}")
     except Exception as e:
         print(f"[SCHEDULER] Erro ao buscar payloads: {e}")
-        _job_log_end("job_check_games", started, success=False, error="fetch_payloads")
         return
 
     if not payloads:
         print("[SCHEDULER] Nenhum jogo elegível no momento.")
-        clv_updated = _refresh_clv_for_pending_predictions()
-        _job_log_end("job_check_games", started, success=True, payloads=0, clv_updated=clv_updated)
+        _refresh_clv_for_pending_predictions()
         return
 
     for payload in payloads:
@@ -363,7 +332,7 @@ def job_check_games():
             except Exception as e:
                 print(f"[SCHEDULER] Erro ao persistir pré-jogo {fixture_id}: {e}")
 
-            alert_key = f"{fixture_id}_30min"
+            alert_key = build_alert_key(fixture_id)
 
             if _already_sent_alert(alert_key):
                 print(f"[SCHEDULER] Alerta já enviado: {home_team} x {away_team}")
@@ -374,7 +343,6 @@ def job_check_games():
 
             if result.get("ok"):
                 _save_sent_alert(alert_key)
-                sent_alerts += 1
                 print(
                     f"[SCHEDULER] Pré-jogo enviado com sucesso: "
                     f"{home_team} x {away_team}"
@@ -385,42 +353,27 @@ def job_check_games():
         except Exception as e:
             print(f"[SCHEDULER] Erro no envio pré-jogo: {e}")
 
-    clv_updated = _refresh_clv_for_pending_predictions()
-    _job_log_end(
-        "job_check_games",
-        started,
-        success=True,
-        payloads=total_payloads,
-        sent_alerts=sent_alerts,
-        clv_updated=clv_updated,
-    )
+    _refresh_clv_for_pending_predictions()
 
 
 def job_check_results():
-    started = _job_log_start("job_check_results")
-    updated_count = 0
-    sent_count = 0
-
     print(f"[SCHEDULER] Rodando verificação de resultados: {now_local()}")
 
     try:
         updates = result_checker.check_pending_predictions()
-        updated_count = len(updates)
-        print(f"[SCHEDULER] Resultados finalizados encontrados: {updated_count}")
+        print(f"[SCHEDULER] Resultados finalizados encontrados: {len(updates)}")
     except Exception as e:
         print(f"[SCHEDULER] Erro ao checar resultados: {e}")
-        _job_log_end("job_check_results", started, success=False, error="result_checker")
         return
 
     if not updates:
         print("[SCHEDULER] Nenhum resultado novo para enviar.")
-        _job_log_end("job_check_results", started, success=True, updated=0, sent=0)
         return
 
     for item in updates:
         try:
             fixture_id = str(item.get("fixture_id", ""))
-            result_key = f"{fixture_id}_result"
+            result_key = build_result_key(fixture_id)
 
             if _already_sent_result(result_key):
                 print(f"[SCHEDULER] Resultado já enviado anteriormente: {fixture_id}")
@@ -439,7 +392,6 @@ def job_check_results():
 
             if result.get("ok"):
                 _save_sent_result(result_key)
-                sent_count += 1
                 print(
                     f"[SCHEDULER] Resultado enviado com sucesso: "
                     f"{item['home_team']} x {item['away_team']} | {item['status']}"
@@ -450,18 +402,8 @@ def job_check_results():
         except Exception as e:
             print(f"[SCHEDULER] Erro no envio de resultado: {e}")
 
-    _job_log_end(
-        "job_check_results",
-        started,
-        success=True,
-        updated=updated_count,
-        sent=sent_count,
-    )
-
 
 def job_monitor_live_matches():
-    started = _job_log_start("job_monitor_live_matches")
-
     runtime = _runtime_config()
     live_enabled = bool(
         runtime.get("live_monitor_enabled", settings.live_monitor_enabled)
@@ -469,54 +411,24 @@ def job_monitor_live_matches():
 
     if not live_enabled:
         print("[LIVE] Monitor live desativado por configuração.")
-        _job_log_end("job_monitor_live_matches", started, success=True, skipped=True)
         return
 
     print(f"[LIVE] Rodando monitor live: {now_local()}")
     try:
         live_monitor.monitor_live_matches()
-        _job_log_end("job_monitor_live_matches", started, success=True)
     except Exception as e:
         print(f"[LIVE] Erro geral no monitor live: {e}")
-        _job_log_end("job_monitor_live_matches", started, success=False)
 
 
 def job_daily_training():
-    started = _job_log_start("job_daily_training")
-
     print(f"[TRAINING] Rodando treino diário: {now_local()}")
 
     try:
         training_dataset_service.append_resolved_predictions_to_dataset()
         ml_training_service.train()
         print("[TRAINING] Treino diário concluído com sucesso.")
-        _job_log_end("job_daily_training", started, success=True)
     except Exception as e:
         print(f"[TRAINING] Erro no treino diário: {e}")
-        _job_log_end("job_daily_training", started, success=False)
-
-
-def run_today_audit():
-    """
-    Auditoria simples do dia:
-    reexecuta checker de resultados para pegar inconsistências do dia atual.
-    """
-    started = _job_log_start("run_today_audit")
-    try:
-        updates = result_checker.check_pending_predictions()
-        _job_log_end("run_today_audit", started, success=True, updated=len(updates))
-        return {
-            "success": True,
-            "updated": len(updates),
-        }
-    except Exception as e:
-        print(f"[AUDIT] Erro na auditoria do dia: {e}")
-        _job_log_end("run_today_audit", started, success=False)
-        return {
-            "success": False,
-            "updated": 0,
-            "error": str(e),
-        }
 
 
 def start_scheduler():
@@ -546,7 +458,6 @@ def start_scheduler():
         replace_existing=True,
         max_instances=1,
         coalesce=True,
-        misfire_grace_time=120,
     )
 
     scheduler.add_job(
@@ -558,7 +469,6 @@ def start_scheduler():
         replace_existing=True,
         max_instances=1,
         coalesce=True,
-        misfire_grace_time=120,
     )
 
     scheduler.add_job(
@@ -570,7 +480,6 @@ def start_scheduler():
         replace_existing=True,
         max_instances=1,
         coalesce=True,
-        misfire_grace_time=600,
     )
 
     scheduler.add_job(
@@ -581,7 +490,6 @@ def start_scheduler():
         replace_existing=True,
         max_instances=1,
         coalesce=True,
-        misfire_grace_time=30,
     )
 
     scheduler.add_job(
@@ -592,19 +500,6 @@ def start_scheduler():
         replace_existing=True,
         max_instances=1,
         coalesce=True,
-        misfire_grace_time=120,
-    )
-
-    scheduler.add_job(
-        run_today_audit,
-        "cron",
-        hour=23,
-        minute=55,
-        id="run_today_audit",
-        replace_existing=True,
-        max_instances=1,
-        coalesce=True,
-        misfire_grace_time=300,
     )
 
     if live_enabled:
@@ -616,13 +511,16 @@ def start_scheduler():
             replace_existing=True,
             max_instances=1,
             coalesce=True,
-            misfire_grace_time=30,
         )
 
     scheduler.start()
     scheduler_started = True
     print("[SCHEDULER] Iniciado com sucesso.")
-    print("[SCHEDULER] Aguardando primeiro ciclo automático dos jobs...")
+
+    print("[SCHEDULER] Executando primeira verificação imediata de resultados...")
+    job_check_results()
+
+    print("[SCHEDULER] Primeira verificação de pré-jogo ficará para o próximo ciclo de 1 minuto.")
 
     if live_enabled:
         print("[SCHEDULER] Monitor live habilitado e aguardando próximo ciclo normal.")

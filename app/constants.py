@@ -24,6 +24,14 @@ LEAGUES = [
         "priority": 1,
     },
     {
+        "key": "uel",
+        "name": "UEFA Europa League",
+        "display_name": "Liga Europa",
+        "id": "4481",
+        "season": "2025-2026",
+        "priority": 1,
+    },
+    {
         "key": "arg",
         "name": "Argentinian Primera Division",
         "display_name": "Argentina Liga Profesional",

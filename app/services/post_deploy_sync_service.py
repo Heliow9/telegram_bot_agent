@@ -1,6 +1,6 @@
 from datetime import datetime
 from zoneinfo import ZoneInfo
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Set
 
 from app.services.daily_leagues_service import DailyLeaguesService
 from app.services.prediction_store import (
@@ -8,12 +8,20 @@ from app.services.prediction_store import (
     get_pending_predictions,
 )
 from app.services.result_checker_service import ResultCheckerService
+from app.services.telegram_service import TelegramService
+from app.services.message_formatter import format_prediction_message
+from app.services.scheduler_service import (
+    build_alert_key,
+    _already_sent_alert,
+    _save_sent_alert,
+)
 
 
 class PostDeploySyncService:
     def __init__(self):
         self.daily_service = DailyLeaguesService()
         self.result_checker = ResultCheckerService()
+        self.telegram = TelegramService()
         self.tz = ZoneInfo("America/Recife")
 
     def _today(self) -> str:
@@ -32,11 +40,6 @@ class PostDeploySyncService:
         home = fixture.get("home_team", "Casa")
         away = fixture.get("away_team", "Fora")
         return f"{home} x {away}"
-
-    def _is_payload_for_today(self, payload: Dict) -> bool:
-        fixture_date = self._fixture_date(payload)
-        today = self._today()
-        return fixture_date == today
 
     def _deduplicate_payloads(self, payloads: List[Dict]) -> List[Dict]:
         unique: List[Dict] = []
@@ -125,6 +128,53 @@ class PostDeploySyncService:
         print(f"[POST_DEPLOY_SYNC] Persistência concluída. Jogos processados: {processed}")
         return processed
 
+    def _send_missing_alerts(self, payloads: List[Dict]) -> int:
+        sent = 0
+
+        for payload in payloads:
+            fixture = payload.get("fixture") or {}
+            fixture_id = str(fixture.get("id") or "").strip()
+            home_team = fixture.get("home_team", "Casa")
+            away_team = fixture.get("away_team", "Fora")
+
+            if not fixture_id:
+                continue
+
+            alert_key = build_alert_key(fixture_id)
+
+            if _already_sent_alert(alert_key):
+                print(
+                    f"[POST_DEPLOY_SYNC] Alerta já existia, não reenviado | "
+                    f"fixture_id={fixture_id} | jogo={home_team} x {away_team}"
+                )
+                continue
+
+            try:
+                message = format_prediction_message(payload)
+                result = self.telegram.send_message(message)
+
+                if result.get("ok"):
+                    _save_sent_alert(alert_key)
+                    sent += 1
+                    print(
+                        f"[POST_DEPLOY_SYNC] Alerta pendente enviado com sucesso | "
+                        f"fixture_id={fixture_id} | jogo={home_team} x {away_team}"
+                    )
+                else:
+                    print(
+                        f"[POST_DEPLOY_SYNC] Falha ao enviar alerta pendente | "
+                        f"fixture_id={fixture_id} | retorno={result}"
+                    )
+
+            except Exception as e:
+                print(
+                    f"[POST_DEPLOY_SYNC] Erro ao enviar alerta pendente | "
+                    f"fixture_id={fixture_id} | erro={e}"
+                )
+
+        print(f"[POST_DEPLOY_SYNC] Alertas pendentes enviados no startup: {sent}")
+        return sent
+
     def _run_result_check(self) -> List[Dict]:
         pending = get_pending_predictions()
         print(f"[POST_DEPLOY_SYNC] Pendentes antes da checagem: {len(pending)}")
@@ -146,11 +196,12 @@ class PostDeploySyncService:
 
         return updates
 
-    def run(self) -> Dict:
+    def run_once(self) -> Dict:
         print("[POST_DEPLOY_SYNC] Iniciando sincronização pós-deploy...")
 
         payloads = self._load_today_payloads()
         processed = self._persist_payloads(payloads)
+        sent_alerts = self._send_missing_alerts(payloads)
         updates = self._run_result_check()
 
         print("[POST_DEPLOY_SYNC] Sincronização pós-deploy finalizada com sucesso.")
@@ -158,5 +209,9 @@ class PostDeploySyncService:
         return {
             "success": True,
             "processed": processed,
+            "sent_alerts": sent_alerts,
             "updated_results": len(updates),
         }
+
+    def run(self) -> Dict:
+        return self.run_once()

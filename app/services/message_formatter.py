@@ -6,6 +6,7 @@ LEAGUE_EMOJIS = {
     "Brasileirão Série A": "🇧🇷",
     "Brasileirão Série B": "🇧🇷",
     "Premier League": "🏴",
+    "Liga Europa": "🇪🇺",
     "Argentina Liga Profesional": "🇦🇷",
     "Itália Série A": "🇮🇹",
     "Turquia Super Lig": "🇹🇷",
@@ -126,15 +127,12 @@ def _format_value_bet(analysis: dict) -> list[str]:
     if not details:
         return []
 
-    fair_odds = details.get("fair_odds")
-    fair_odds_text = f"{fair_odds}" if fair_odds is not None else "-"
-
     return [
         "",
         "💰 *Value Bet Detectado*",
         f"• Mercado: *{details.get('label')}* ({details.get('market')})",
         f"• Odd atual: *{details.get('odds')}*",
-        f"• Odd justa: *{fair_odds_text}*",
+        f"• Odd justa: *{details.get('fair_odds')}*",
         f"• Prob. modelo: *{details.get('model_prob', 0):.0%}*",
         f"• Prob. implícita: *{details.get('implied_prob', 0):.0%}*",
         f"• Edge: *{details.get('edge', 0):.2%}*",
