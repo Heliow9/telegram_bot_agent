@@ -62,6 +62,14 @@ class Prediction(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     checked_at = Column(DateTime, nullable=True)
 
+    # novos campos de operação
+    started_at = Column(DateTime, nullable=True)
+    finished_at = Column(DateTime, nullable=True)
+    last_checked_at = Column(DateTime, nullable=True)
+    result_source = Column(String(50), nullable=True)
+    last_status_text = Column(String(100), nullable=True)
+    is_live = Column(Boolean, default=False, nullable=False)
+
     odds = relationship("PredictionOdds", back_populates="prediction", uselist=False)
 
 

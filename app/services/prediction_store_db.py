@@ -85,10 +85,16 @@ def save_prediction_db(payload: dict):
             away_score=None,
             features_json=json.dumps(
                 analysis.get("features"),
-                ensure_ascii=False
+                ensure_ascii=False,
             ) if analysis.get("features") is not None else None,
             created_at=datetime.utcnow(),
             checked_at=None,
+            started_at=None,
+            finished_at=None,
+            last_checked_at=None,
+            result_source=None,
+            last_status_text=None,
+            is_live=False,
         )
 
         db.add(prediction)
@@ -131,21 +137,39 @@ def update_prediction_result_db(
     result: str,
     home_score: int,
     away_score: int,
+    status_text: Optional[str] = None,
+    result_source: Optional[str] = None,
+    is_live: bool = False,
+    finished: bool = True,
 ):
     db = SessionLocal()
     try:
         fixture_id = str(fixture_id).strip()
         result = str(result).strip().upper()
+        now = datetime.utcnow()
 
         item = db.query(Prediction).filter(Prediction.fixture_id == fixture_id).first()
         if not item:
             print(f"[DB] Prediction não encontrada para fixture_id={fixture_id}")
             return
 
+        previous_status = item.status
+
         item.result = result
         item.home_score = home_score
         item.away_score = away_score
-        item.checked_at = datetime.utcnow()
+        item.checked_at = now
+        item.last_checked_at = now
+        item.last_status_text = status_text
+        item.result_source = result_source or "sportsdb"
+        item.is_live = bool(is_live)
+
+        if item.started_at is None:
+            item.started_at = now
+
+        if finished:
+            item.finished_at = now
+
         item.status = "hit" if str(item.pick).strip().upper() == result else "miss"
 
         db.commit()
@@ -153,7 +177,8 @@ def update_prediction_result_db(
         print(
             f"[DB] Resultado atualizado | fixture_id={fixture_id} | "
             f"pick={item.pick} | result={result} | "
-            f"placar={home_score}x{away_score} | status={item.status}"
+            f"placar={home_score}x{away_score} | "
+            f"status_anterior={previous_status} | status_novo={item.status}"
         )
 
     except Exception as e:
@@ -178,6 +203,7 @@ def update_prediction_market_odds_db(
             return
 
         item.odds.latest_market_odds = float(latest_market_odds)
+        item.last_checked_at = datetime.utcnow()
         db.commit()
 
     except Exception:
@@ -201,6 +227,12 @@ def get_prediction_db_by_fixture_id(fixture_id: str) -> Optional[Dict]:
             "home_score": item.home_score,
             "away_score": item.away_score,
             "pick": item.pick,
+            "started_at": item.started_at.isoformat() if item.started_at else None,
+            "finished_at": item.finished_at.isoformat() if item.finished_at else None,
+            "last_checked_at": item.last_checked_at.isoformat() if item.last_checked_at else None,
+            "result_source": item.result_source,
+            "last_status_text": item.last_status_text,
+            "is_live": item.is_live,
         }
     finally:
         db.close()

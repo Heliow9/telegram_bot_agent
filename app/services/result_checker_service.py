@@ -78,6 +78,9 @@ class ResultCheckerService:
     def _normalize_locked(self, value: Optional[str]) -> str:
         return str(value or "").strip().lower()
 
+    def _normalize_status_text(self, value: Optional[str]) -> str:
+        return str(value or "").strip()
+
     def _result_from_scores(self, home_score: Optional[int], away_score: Optional[int]) -> Optional[str]:
         if home_score is None or away_score is None:
             return None
@@ -124,7 +127,6 @@ class ResultCheckerService:
             details.get("intAwayScore", details.get("away_score"))
         )
 
-        # fallback útil para SportsDB bugada
         if home_score is not None and away_score is not None:
             status = str(
                 details.get("strStatus")
@@ -151,6 +153,13 @@ class ResultCheckerService:
 
         finished = self._is_finished_from_details(details)
 
+        status_text = (
+            details.get("strStatus")
+            or details.get("strProgress")
+            or details.get("status_text")
+            or details.get("status")
+        )
+
         result = None
         if finished:
             result = (
@@ -164,12 +173,7 @@ class ResultCheckerService:
             "home_score": home_score,
             "away_score": away_score,
             "result": result,
-            "status_text": (
-                details.get("strStatus")
-                or details.get("strProgress")
-                or details.get("status_text")
-                or details.get("status")
-            ),
+            "status_text": self._normalize_status_text(status_text),
             "locked": self._normalize_locked(details.get("strLocked")),
         }
 
@@ -188,7 +192,7 @@ class ResultCheckerService:
         raw_home_score = self._safe_int(result_data.get("home_score"))
         raw_away_score = self._safe_int(result_data.get("away_score"))
         raw_finished = bool(result_data.get("finished"))
-        raw_status = result_data.get("status_text")
+        raw_status = self._normalize_status_text(result_data.get("status_text"))
 
         merged_home_score = (
             raw_home_score
@@ -203,6 +207,7 @@ class ResultCheckerService:
 
         merged_finished = raw_finished or bool((detail_result or {}).get("finished"))
         merged_status = raw_status or (detail_result or {}).get("status_text")
+        merged_locked = result_data.get("locked") or (detail_result or {}).get("locked")
 
         merged_result = None
         if merged_finished:
@@ -212,6 +217,17 @@ class ResultCheckerService:
                 or self._result_from_scores(merged_home_score, merged_away_score)
             )
 
+        is_live = False
+        normalized_status = str(merged_status or "").strip().lower()
+        if normalized_status in self.LIVE_STATUSES:
+            is_live = True
+
+        if normalized_status in self.NOT_STARTED_STATUSES:
+            is_live = False
+
+        if merged_finished:
+            is_live = False
+
         return {
             "fixture_id": fixture_id,
             "finished": merged_finished,
@@ -219,7 +235,8 @@ class ResultCheckerService:
             "away_score": merged_away_score,
             "result": merged_result,
             "status_text": merged_status,
-            "locked": result_data.get("locked") or (detail_result or {}).get("locked"),
+            "locked": merged_locked,
+            "is_live": is_live,
         }
 
     def check_pending_predictions(self) -> List[Dict]:
@@ -289,6 +306,10 @@ class ResultCheckerService:
                 result=merged["result"],
                 home_score=merged["home_score"],
                 away_score=merged["away_score"],
+                status_text=merged.get("status_text"),
+                result_source="sportsdb",
+                is_live=merged.get("is_live", False),
+                finished=merged.get("finished", False),
             )
 
             updates.append({

@@ -1,6 +1,7 @@
 from contextlib import asynccontextmanager
 import logging
 import os
+import threading
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -12,6 +13,7 @@ from app.routers.predictions import router as predictions_router
 from app.routers.auth import router as auth_router
 from app.routers.dashboard import router as dashboard_router
 from app.routers.settings import router as settings_router
+from app.routers.admin import router as admin_router
 from app.services.scheduler_service import start_scheduler
 from app.services.post_deploy_sync_service import PostDeploySyncService
 
@@ -57,6 +59,19 @@ def safe_run_post_deploy_sync() -> None:
         logger.exception("❌ Erro na sincronização pós-deploy: %s", e)
 
 
+def start_background_jobs() -> None:
+    def run():
+        safe_run_post_deploy_sync()
+        safe_start_scheduler()
+
+    thread = threading.Thread(
+        target=run,
+        name="botbet-background-jobs",
+        daemon=True,
+    )
+    thread.start()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("🚀 Iniciando aplicação...")
@@ -64,8 +79,8 @@ async def lifespan(app: FastAPI):
 
     Base.metadata.create_all(bind=engine)
 
-    safe_run_post_deploy_sync()
-    safe_start_scheduler()
+    # mantém scheduler e pós-deploy fora da thread principal da API
+    start_background_jobs()
 
     yield
 
@@ -82,7 +97,7 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:5173",
         "http://127.0.0.1:5173",
-        "https://bot-bet-front.onrender.com"
+        "https://bot-bet-front.onrender.com",
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -93,6 +108,7 @@ app.include_router(predictions_router)
 app.include_router(auth_router)
 app.include_router(dashboard_router)
 app.include_router(settings_router)
+app.include_router(admin_router)
 
 
 @app.middleware("http")

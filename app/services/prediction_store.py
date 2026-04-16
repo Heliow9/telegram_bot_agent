@@ -1,6 +1,5 @@
 import json
 from pathlib import Path
-from datetime import datetime
 from typing import Optional, Dict, List
 
 from app.db import SessionLocal
@@ -68,6 +67,12 @@ def _sync_db_to_json():
                 "away_score": prediction.away_score,
                 "status": prediction.status,
                 "checked_at": prediction.checked_at.isoformat() if prediction.checked_at else None,
+                "started_at": prediction.started_at.isoformat() if prediction.started_at else None,
+                "finished_at": prediction.finished_at.isoformat() if prediction.finished_at else None,
+                "last_checked_at": prediction.last_checked_at.isoformat() if prediction.last_checked_at else None,
+                "result_source": prediction.result_source,
+                "last_status_text": prediction.last_status_text,
+                "is_live": prediction.is_live,
                 "features": None,
                 "model_source": prediction.model_source,
                 "odds_snapshot": {
@@ -163,6 +168,12 @@ def get_prediction_by_fixture_id(fixture_id: str) -> Optional[Dict]:
             "away_score": item.away_score,
             "status": item.status,
             "checked_at": item.checked_at.isoformat() if item.checked_at else None,
+            "started_at": item.started_at.isoformat() if item.started_at else None,
+            "finished_at": item.finished_at.isoformat() if item.finished_at else None,
+            "last_checked_at": item.last_checked_at.isoformat() if item.last_checked_at else None,
+            "result_source": item.result_source,
+            "last_status_text": item.last_status_text,
+            "is_live": item.is_live,
             "model_source": item.model_source,
         }
     finally:
@@ -174,6 +185,10 @@ def update_prediction_result(
     result: str,
     home_score: int,
     away_score: int,
+    status_text: Optional[str] = None,
+    result_source: Optional[str] = None,
+    is_live: bool = False,
+    finished: bool = True,
 ):
     try:
         update_prediction_result_db(
@@ -181,6 +196,10 @@ def update_prediction_result(
             result=result,
             home_score=home_score,
             away_score=away_score,
+            status_text=status_text,
+            result_source=result_source,
+            is_live=is_live,
+            finished=finished,
         )
     except Exception as e:
         print(f"[PREDICTION_STORE][DB] Erro ao atualizar resultado no MySQL: {e}")
@@ -238,6 +257,9 @@ def get_pending_predictions() -> List[Dict]:
                     "confidence": item.confidence,
                     "status": item.status,
                     "model_source": item.model_source,
+                    "is_live": item.is_live,
+                    "last_status_text": item.last_status_text,
+                    "last_checked_at": item.last_checked_at.isoformat() if item.last_checked_at else None,
                 }
             )
 
@@ -273,6 +295,12 @@ def get_resolved_predictions() -> List[Dict]:
                     "home_score": item.home_score,
                     "away_score": item.away_score,
                     "checked_at": item.checked_at.isoformat() if item.checked_at else None,
+                    "started_at": item.started_at.isoformat() if item.started_at else None,
+                    "finished_at": item.finished_at.isoformat() if item.finished_at else None,
+                    "last_checked_at": item.last_checked_at.isoformat() if item.last_checked_at else None,
+                    "result_source": item.result_source,
+                    "last_status_text": item.last_status_text,
+                    "is_live": item.is_live,
                     "model_source": item.model_source,
                 }
             )
