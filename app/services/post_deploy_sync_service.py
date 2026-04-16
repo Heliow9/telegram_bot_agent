@@ -93,20 +93,13 @@ class PostDeploySyncService:
     def _load_today_payloads(self) -> List[Dict]:
         today = self._today()
 
-        morning_payloads = self.daily_service.get_morning_payloads(today)
+        day_payloads = self.daily_service.get_all_day_payloads(today)
         print(
-            f"[POST_DEPLOY_SYNC] Jogos da manhã encontrados: "
-            f"{len(morning_payloads)}"
+            f"[POST_DEPLOY_SYNC] Jogos do dia inteiro encontrados: "
+            f"{len(day_payloads)}"
         )
 
-        afternoon_payloads = self.daily_service.get_afternoon_payloads(today)
-        print(
-            f"[POST_DEPLOY_SYNC] Jogos da tarde/noite encontrados: "
-            f"{len(afternoon_payloads)}"
-        )
-
-        all_payloads = morning_payloads + afternoon_payloads
-        all_payloads = self._deduplicate_payloads(all_payloads)
+        all_payloads = self._deduplicate_payloads(day_payloads)
         all_payloads = self._filter_payloads_for_today(all_payloads)
 
         print(

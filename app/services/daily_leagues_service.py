@@ -89,6 +89,28 @@ class DailyLeaguesService:
 
         return filtered_events
 
+    def _select_events(self, events: List[Dict], selector_name: str) -> tuple[List[Dict], str]:
+        if selector_name == "morning":
+            return filter_morning_events(events), "Manhã"
+
+        if selector_name == "afternoon":
+            return filter_afternoon_events(events), "Tarde/Noite"
+
+        if selector_name == "30min":
+            return (
+                filter_events_starting_in_30_minutes(
+                    events,
+                    min_minutes=28,
+                    max_minutes=31,
+                ),
+                "Janela 30min",
+            )
+
+        if selector_name == "all_day":
+            return events, "Dia inteiro"
+
+        return [], selector_name
+
     def _build_payloads_for_date(
         self,
         date_str: str,
@@ -99,23 +121,7 @@ class DailyLeaguesService:
         for league_meta in sorted(LEAGUES, key=lambda x: x["priority"]):
             try:
                 events = self._events_for_league_on_date(league_meta, date_str)
-
-                if selector_name == "morning":
-                    selected = filter_morning_events(events)
-                    label = "Manhã"
-                elif selector_name == "afternoon":
-                    selected = filter_afternoon_events(events)
-                    label = "Tarde/Noite"
-                elif selector_name == "30min":
-                    selected = filter_events_starting_in_30_minutes(
-                        events,
-                        min_minutes=28,
-                        max_minutes=31,
-                    )
-                    label = "Janela 30min"
-                else:
-                    selected = []
-                    label = selector_name
+                selected, label = self._select_events(events, selector_name)
 
                 if selected:
                     print(
@@ -123,9 +129,18 @@ class DailyLeaguesService:
                         f"data={date_str} | eventos encontrados: {len(selected)}"
                     )
 
-                payloads.extend(
-                    self.analysis_service.build_many_analyses(selected, league_meta)
+                built_payloads = self.analysis_service.build_many_analyses(
+                    selected,
+                    league_meta,
                 )
+
+                if built_payloads:
+                    print(
+                        f"[DAILY] {label} | {league_meta['display_name']} | "
+                        f"payloads gerados: {len(built_payloads)}"
+                    )
+
+                payloads.extend(built_payloads)
 
             except Exception as e:
                 print(
@@ -135,6 +150,10 @@ class DailyLeaguesService:
                 continue
 
         return self.analysis_service.sort_by_best_picks(payloads)
+
+    def get_all_day_payloads(self, date_str: Optional[str] = None) -> List[Dict]:
+        target_date = date_str or self._today()
+        return self._build_payloads_for_date(target_date, "all_day")
 
     def get_morning_payloads(self, date_str: Optional[str] = None) -> List[Dict]:
         target_date = date_str or self._today()
@@ -146,4 +165,4 @@ class DailyLeaguesService:
 
     def get_30min_payloads(self, date_str: Optional[str] = None) -> List[Dict]:
         target_date = date_str or self._today()
-        return self._build_payloads_for_date(target_date, "30min")  
+        return self._build_payloads_for_date(target_date, "30min")
