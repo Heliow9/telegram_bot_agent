@@ -48,7 +48,10 @@ class PostDeploySyncService:
         for payload in payloads:
             fixture_id = self._fixture_id(payload)
             if not fixture_id:
-                print(f"[POST_DEPLOY_SYNC] Jogo ignorado sem fixture_id: {self._fixture_label(payload)}")
+                print(
+                    f"[POST_DEPLOY_SYNC] Jogo ignorado sem fixture_id: "
+                    f"{self._fixture_label(payload)}"
+                )
                 continue
 
             if fixture_id in seen_ids:
@@ -88,17 +91,28 @@ class PostDeploySyncService:
         return filtered
 
     def _load_today_payloads(self) -> List[Dict]:
-        morning_payloads = self.daily_service.get_morning_payloads()
-        print(f"[POST_DEPLOY_SYNC] Jogos da manhã encontrados: {len(morning_payloads)}")
+        today = self._today()
 
-        afternoon_payloads = self.daily_service.get_afternoon_payloads()
-        print(f"[POST_DEPLOY_SYNC] Jogos da tarde/noite encontrados: {len(afternoon_payloads)}")
+        morning_payloads = self.daily_service.get_morning_payloads(today)
+        print(
+            f"[POST_DEPLOY_SYNC] Jogos da manhã encontrados: "
+            f"{len(morning_payloads)}"
+        )
+
+        afternoon_payloads = self.daily_service.get_afternoon_payloads(today)
+        print(
+            f"[POST_DEPLOY_SYNC] Jogos da tarde/noite encontrados: "
+            f"{len(afternoon_payloads)}"
+        )
 
         all_payloads = morning_payloads + afternoon_payloads
         all_payloads = self._deduplicate_payloads(all_payloads)
         all_payloads = self._filter_payloads_for_today(all_payloads)
 
-        print(f"[POST_DEPLOY_SYNC] Total de jogos únicos válidos hoje: {len(all_payloads)}")
+        print(
+            f"[POST_DEPLOY_SYNC] Total de jogos únicos válidos hoje: "
+            f"{len(all_payloads)}"
+        )
         return all_payloads
 
     def _persist_payloads(self, payloads: List[Dict]) -> int:
@@ -125,7 +139,10 @@ class PostDeploySyncService:
                     f"{fixture.get('home_team')} x {fixture.get('away_team')}: {e}"
                 )
 
-        print(f"[POST_DEPLOY_SYNC] Persistência concluída. Jogos processados: {processed}")
+        print(
+            f"[POST_DEPLOY_SYNC] Persistência concluída. "
+            f"Jogos processados: {processed}"
+        )
         return processed
 
     def _send_missing_alerts(self, payloads: List[Dict]) -> int:

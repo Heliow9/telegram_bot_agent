@@ -24,12 +24,40 @@ class DailyLeaguesService:
     def _today(self) -> str:
         return self._now_local().strftime("%Y-%m-%d")
 
+    def _parse_local_datetime_from_event(self, event: Dict) -> Optional[datetime]:
+        date_event_local = str(event.get("dateEventLocal") or "").strip()
+        time_event_local = str(event.get("strTimeLocal") or "").strip()
+
+        if date_event_local:
+            if not time_event_local:
+                time_event_local = "00:00:00"
+
+            normalized_time = time_event_local.replace("Z", "")
+            if "+" in normalized_time:
+                normalized_time = normalized_time.split("+", 1)[0]
+            if normalized_time.count(":") == 1:
+                normalized_time = f"{normalized_time}:00"
+
+            raw_value = f"{date_event_local} {normalized_time}"
+
+            for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+                try:
+                    return datetime.strptime(raw_value, fmt).replace(tzinfo=self.tz)
+                except ValueError:
+                    continue
+
+        return None
+
     def _is_event_for_target_local_date(self, event: Dict, target_date: str) -> bool:
         date_event_local = str(event.get("dateEventLocal") or "").strip()
         date_event = str(event.get("dateEvent") or "").strip()
 
-        if date_event_local:
-            return date_event_local == target_date
+        if date_event_local and date_event_local == target_date:
+            return True
+
+        local_dt = self._parse_local_datetime_from_event(event)
+        if local_dt and local_dt.strftime("%Y-%m-%d") == target_date:
+            return True
 
         return date_event == target_date
 
@@ -39,10 +67,18 @@ class DailyLeaguesService:
             league_meta["name"],
         )
 
-        filtered_events = [
-            event for event in raw_events
-            if self._is_event_for_target_local_date(event, date_str)
-        ]
+        filtered_events = []
+
+        for event in raw_events:
+            if self._is_event_for_target_local_date(event, date_str):
+                filtered_events.append(event)
+            else:
+                print(
+                    f"[DAILY][DROP] {league_meta['display_name']} | "
+                    f"evento={event.get('strEvent')} | "
+                    f"dateEvent={event.get('dateEvent')} {event.get('strTime')} | "
+                    f"dateEventLocal={event.get('dateEventLocal')} {event.get('strTimeLocal')}"
+                )
 
         print(
             f"[DAILY] {league_meta['display_name']} | "
@@ -110,4 +146,4 @@ class DailyLeaguesService:
 
     def get_30min_payloads(self, date_str: Optional[str] = None) -> List[Dict]:
         target_date = date_str or self._today()
-        return self._build_payloads_for_date(target_date, "30min")
+        return self._build_payloads_for_date(target_date, "30min")  
