@@ -17,5 +17,7 @@ def update_runtime_settings(
     payload: RuntimeConfigUpdate,
     current_user=Depends(get_current_user),
 ):
-    updated = save_runtime_config(payload.model_dump())
+    updated = save_runtime_config(
+        payload.model_dump(exclude_unset=True, exclude_none=True)
+    )
     return updated

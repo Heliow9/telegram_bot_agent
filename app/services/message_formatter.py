@@ -17,6 +17,46 @@ LEAGUE_EMOJIS = {
 }
 
 
+def _safe_text(value) -> str:
+    return str(value or "").strip()
+
+
+def _escape_markdown(text: str) -> str:
+    text = _safe_text(text)
+
+    # seguro tanto para Markdown quanto ajuda bastante no V2
+    replacements = [
+        ("\\", "\\\\"),
+        ("_", "\\_"),
+        ("*", "\\*"),
+        ("[", "\\["),
+        ("]", "\\]"),
+        ("(", "\\("),
+        (")", "\\)"),
+        ("~", "\\~"),
+        ("`", "\\`"),
+        (">", "\\>"),
+        ("#", "\\#"),
+        ("+", "\\+"),
+        ("-", "\\-"),
+        ("=", "\\="),
+        ("|", "\\|"),
+        ("{", "\\{"),
+        ("}", "\\}"),
+        (".", "\\."),
+        ("!", "\\!"),
+    ]
+
+    for old, new in replacements:
+        text = text.replace(old, new)
+
+    return text
+
+
+def _md(value) -> str:
+    return _escape_markdown(_safe_text(value))
+
+
 def _time_only(date_value: str, time_value: str) -> str:
     _, local_time = format_local_datetime(date_value, time_value)
     return local_time[:5] if local_time else "--:--"
@@ -92,15 +132,15 @@ def _format_odds(analysis: dict) -> list[str]:
         "📉 *Odds 1X2*",
     ]
 
-    if odds.get("home_odds"):
-        lines.append(f"• Casa: *{odds['home_odds']:.2f}*")
-    if odds.get("draw_odds"):
-        lines.append(f"• Empate: *{odds['draw_odds']:.2f}*")
-    if odds.get("away_odds"):
-        lines.append(f"• Fora: *{odds['away_odds']:.2f}*")
+    if odds.get("home_odds") is not None:
+        lines.append(f"• Casa: *{float(odds['home_odds']):.2f}*")
+    if odds.get("draw_odds") is not None:
+        lines.append(f"• Empate: *{float(odds['draw_odds']):.2f}*")
+    if odds.get("away_odds") is not None:
+        lines.append(f"• Fora: *{float(odds['away_odds']):.2f}*")
 
     if odds.get("bookmaker"):
-        lines.append(f"• Bookmaker: *{odds['bookmaker']}*")
+        lines.append(f"• Bookmaker: *{_md(odds['bookmaker'])}*")
 
     return lines
 
@@ -110,11 +150,17 @@ def _format_odds_comparison(analysis: dict) -> list[str]:
     if not comparison:
         return []
 
+    fair_odds = comparison.get("fair_odds")
+    current_odds = comparison.get("current_odds")
+
+    if fair_odds is None or current_odds is None:
+        return []
+
     return [
         "",
         "⚖️ *Comparativo de Odds*",
-        f"• Odd justa do modelo: *{comparison.get('fair_odds'):.2f}*",
-        f"• Odd atual do mercado: *{comparison.get('current_odds'):.2f}*",
+        f"• Odd justa do modelo: *{float(fair_odds):.2f}*",
+        f"• Odd atual do mercado: *{float(current_odds):.2f}*",
     ]
 
 
@@ -130,7 +176,7 @@ def _format_value_bet(analysis: dict) -> list[str]:
     return [
         "",
         "💰 *Value Bet Detectado*",
-        f"• Mercado: *{details.get('label')}* ({details.get('market')})",
+        f"• Mercado: *{_md(details.get('label'))}* \\({_md(details.get('market'))}\\)",
         f"• Odd atual: *{details.get('odds')}*",
         f"• Odd justa: *{details.get('fair_odds')}*",
         f"• Prob. modelo: *{details.get('model_prob', 0):.0%}*",
@@ -154,15 +200,15 @@ def _format_clv(item: dict) -> list[str]:
     lines = [
         "",
         "📌 *Closing Line Value*",
-        f"• Odd no alerta: *{open_odds:.2f}*",
-        f"• Odd mais recente: *{close_odds:.2f}*",
+        f"• Odd no alerta: *{float(open_odds):.2f}*",
+        f"• Odd mais recente: *{float(close_odds):.2f}*",
     ]
 
     if movement is not None:
         if movement > 0:
-            lines.append(f"• Movimento: *+{movement:.2f}*")
+            lines.append(f"• Movimento: *\\+{float(movement):.2f}*")
         else:
-            lines.append(f"• Movimento: *{movement:.2f}*")
+            lines.append(f"• Movimento: *{float(movement):.2f}*")
 
     if close_odds < open_odds:
         lines.append("• Leitura: *mercado confirmou o lado do bot*")
@@ -190,11 +236,11 @@ def format_prediction_message(payload: dict) -> str:
     away_team = fixture["away_team"]
 
     lines = [
-        "📊 *ANÁLISE PRÉ-JOGO*",
+        "📊 *ANÁLISE PRÉ\\-JOGO*",
         "",
-        f"{emoji} *{league_name}*",
-        f"⚽ *{home_team} x {away_team}*",
-        f"🕒 {local_date} • {local_time}",
+        f"{emoji} *{_md(league_name)}*",
+        f"⚽ *{_md(home_team)} x {_md(away_team)}*",
+        f"🕒 {_md(local_date)} • {_md(local_time)}",
         "",
     ]
 
@@ -210,9 +256,9 @@ def format_prediction_message(payload: dict) -> str:
         f"• Empate: *{analysis['prob_draw']:.0%}*",
         f"• Fora: *{analysis['prob_away']:.0%}*",
         "",
-        f"🎯 *Palpite:* {_pick_label(analysis['suggested_pick'])} ({analysis['suggested_pick']})",
-        f"🔒 *Confiança:* {_confidence_label(analysis['confidence'])}",
-        f"🧠 *Modelo:* {analysis.get('model_source', 'heuristic').upper()}",
+        f"🎯 *Palpite:* {_md(_pick_label(analysis['suggested_pick']))} \\({_md(analysis['suggested_pick'])}\\)",
+        f"🔒 *Confiança:* {_md(_confidence_label(analysis['confidence']))}",
+        f"🧠 *Modelo:* {_md(analysis.get('model_source', 'heuristic').upper())}",
     ])
 
     lines.extend(_format_odds(analysis))
@@ -239,28 +285,28 @@ def format_best_pick(payload: dict) -> str:
     lines = [
         "🔥 *APOSTA MAIS FORTE DO DIA*",
         "",
-        f"{emoji} *{league_name}*",
-        f"⚽ *{home_team} x {away_team}*",
-        f"🕒 {local_time}",
+        f"{emoji} *{_md(league_name)}*",
+        f"⚽ *{_md(home_team)} x {_md(away_team)}*",
+        f"🕒 {_md(local_time)}",
         "",
         "*Probabilidades 1X2*",
         f"• Casa: *{analysis['prob_home']:.0%}*",
         f"• Empate: *{analysis['prob_draw']:.0%}*",
         f"• Fora: *{analysis['prob_away']:.0%}*",
         "",
-        f"🎯 *Entrada sugerida:* {_pick_label(analysis['suggested_pick'])} ({analysis['suggested_pick']})",
-        f"🔒 *Confiança:* {_confidence_label(analysis['confidence'])}",
-        f"🧠 *Modelo:* {analysis.get('model_source', 'heuristic').upper()}",
+        f"🎯 *Entrada sugerida:* {_md(_pick_label(analysis['suggested_pick']))} \\({_md(analysis['suggested_pick'])}\\)",
+        f"🔒 *Confiança:* {_md(_confidence_label(analysis['confidence']))}",
+        f"🧠 *Modelo:* {_md(analysis.get('model_source', 'heuristic').upper())}",
     ]
 
-    if market_odds:
-        lines.append(f"📉 *Odd atual:* {market_odds:.2f}")
+    if market_odds is not None:
+        lines.append(f"📉 *Odd atual:* {float(market_odds):.2f}")
 
-    if fair_odds:
-        lines.append(f"⚖️ *Odd justa:* {fair_odds:.2f}")
+    if fair_odds is not None:
+        lines.append(f"⚖️ *Odd justa:* {float(fair_odds):.2f}")
 
     if edge is not None:
-        lines.append(f"💰 *Edge:* {edge:.2%}")
+        lines.append(f"💰 *Edge:* {float(edge):.2%}")
 
     if analysis.get("value_bet", {}).get("has_value"):
         lines.append("✅ *Value bet detectado*")
@@ -270,7 +316,7 @@ def format_best_pick(payload: dict) -> str:
 
 def format_top_ranking(payloads: list[dict], top_n: int = 5) -> str:
     if not payloads:
-        return "📭 *TOP PALPITES DO DIA*\n\nNenhum jogo encontrado."
+        return "📭 *TOP PALPITES DO DIA*\n\nNenhum jogo encontrado\\."
 
     medals = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
     top_items = payloads[:top_n]
@@ -282,7 +328,7 @@ def format_top_ranking(payloads: list[dict], top_n: int = 5) -> str:
         analysis = payload["analysis"]
         league_name = payload["league"]["display_name"]
         emoji = _league_emoji(league_name)
-        marker = medals[idx] if idx < len(medals) else f"{idx + 1}."
+        marker = medals[idx] if idx < len(medals) else f"{idx + 1}\\."
         value_flag = " 💰" if analysis.get("value_bet", {}).get("has_value") else ""
 
         home_team = fixture["home_team"]
@@ -291,18 +337,18 @@ def format_top_ranking(payloads: list[dict], top_n: int = 5) -> str:
         market_odds = _get_pick_market_odds(analysis)
         edge = _get_pick_edge(analysis)
 
-        lines.append(f"{marker} *{home_team} x {away_team}*{value_flag}")
-        lines.append(f"{emoji} {league_name} • {_time_only(fixture['date'], fixture['time'])}")
+        lines.append(f"{marker} *{_md(home_team)} x {_md(away_team)}*{value_flag}")
+        lines.append(f"{emoji} {_md(league_name)} • {_md(_time_only(fixture['date'], fixture['time']))}")
         lines.append(
-            f"Palpite: *{_pick_label(analysis['suggested_pick'])}* • "
-            f"Confiança: *{_confidence_label(analysis['confidence'])}*"
+            f"Palpite: *{_md(_pick_label(analysis['suggested_pick']))}* • "
+            f"Confiança: *{_md(_confidence_label(analysis['confidence']))}*"
         )
 
         extras = []
-        if market_odds:
-            extras.append(f"Odd: *{market_odds:.2f}*")
+        if market_odds is not None:
+            extras.append(f"Odd: *{float(market_odds):.2f}*")
         if edge is not None:
-            extras.append(f"Edge: *{edge:.2%}*")
+            extras.append(f"Edge: *{float(edge):.2%}*")
 
         if extras:
             lines.append(" • ".join(extras))
@@ -321,10 +367,10 @@ def group_payloads_by_league(payloads: list[dict]) -> dict[str, list[dict]]:
 
 def format_league_summary(league_name: str, payloads: list[dict]) -> str:
     if not payloads:
-        return f"🏆 *{league_name.upper()}*\n\nNenhum jogo encontrado."
+        return f"🏆 *{_md(league_name.upper())}*\n\nNenhum jogo encontrado\\."
 
     emoji = _league_emoji(league_name)
-    lines = [f"{emoji} *{league_name.upper()}*", ""]
+    lines = [f"{emoji} *{_md(league_name.upper())}*", ""]
 
     for payload in payloads:
         fixture = payload["fixture"]
@@ -337,23 +383,23 @@ def format_league_summary(league_name: str, payloads: list[dict]) -> str:
         market_odds = _get_pick_market_odds(analysis)
         edge = _get_pick_edge(analysis)
 
-        lines.append(f"⚽ *{home_team} x {away_team}*{value_flag}")
-        lines.append(f"🕒 {_time_only(fixture['date'], fixture['time'])}")
+        lines.append(f"⚽ *{_md(home_team)} x {_md(away_team)}*{value_flag}")
+        lines.append(f"🕒 {_md(_time_only(fixture['date'], fixture['time']))}")
         lines.append(
-            f"🎯 *{_pick_label(analysis['suggested_pick'])}* | "
-            f"🔒 *{_confidence_label(analysis['confidence'])}*"
+            f"🎯 *{_md(_pick_label(analysis['suggested_pick']))}* | "
+            f"🔒 *{_md(_confidence_label(analysis['confidence']))}*"
         )
         lines.append(
             f"📈 {analysis['prob_home']:.0%} • {analysis['prob_draw']:.0%} • {analysis['prob_away']:.0%}"
         )
 
         extras = []
-        if market_odds:
-            extras.append(f"Odd {market_odds:.2f}")
+        if market_odds is not None:
+            extras.append(f"Odd {float(market_odds):.2f}")
         if edge is not None:
-            extras.append(f"Edge {edge:.2%}")
+            extras.append(f"Edge {float(edge):.2%}")
         if extras:
-            lines.append(f"💹 {' | '.join(extras)}")
+            lines.append(f"💹 {_md(' | '.join(extras))}")
 
         if analysis.get("home_rank") and analysis.get("away_rank"):
             lines.append(f"📍 Tabela: #{analysis['home_rank']} vs #{analysis['away_rank']}")
@@ -380,14 +426,14 @@ def format_result_message(item: dict, ai_summary: str | None = None) -> str:
     lines = [
         f"{status_emoji} *{status_label}*",
         "",
-        f"🏆 *{league}*",
-        f"⚽ *{home_team} x {away_team}*",
-        f"📊 *Placar final:* {home_score} x {away_score}",
-        f"🏁 *Resultado:* {_result_label(real_result, home_team, away_team)}",
+        f"🏆 *{_md(league)}*",
+        f"⚽ *{_md(home_team)} x {_md(away_team)}*",
+        f"📊 *Placar final:* {_md(home_score)} x {_md(away_score)}",
+        f"🏁 *Resultado:* {_md(_result_label(real_result, home_team, away_team))}",
         "",
-        f"📌 *Palpite enviado:* {_pick_label(pick)} ({pick})",
-        f"🎯 *Resultado real:* {real_result}",
-        f"🔒 *Confiança do modelo:* {_confidence_label(confidence)}",
+        f"📌 *Palpite enviado:* {_md(_pick_label(pick))} \\({_md(pick)}\\)",
+        f"🎯 *Resultado real:* {_md(real_result)}",
+        f"🔒 *Confiança do modelo:* {_md(_confidence_label(confidence))}",
     ]
 
     lines.extend(_format_clv(item))
@@ -396,7 +442,7 @@ def format_result_message(item: dict, ai_summary: str | None = None) -> str:
         lines.extend([
             "",
             "🤖 *Resumo IA*",
-            ai_summary.strip(),
+            _md(ai_summary.strip()),
         ])
 
     return "\n".join(lines)

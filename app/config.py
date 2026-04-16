@@ -13,6 +13,7 @@ class Settings(BaseModel):
 
     telegram_bot_token: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
     telegram_chat_id: str = os.getenv("TELEGRAM_CHAT_ID", "")
+    telegram_channel_chat_id: str = os.getenv("TELEGRAM_CHANNEL_CHAT_ID", "")
 
     sportsdb_api_key: str = os.getenv("SPORTSDB_API_KEY", "123")
     sportsdb_base_url: str = os.getenv(

@@ -16,6 +16,8 @@ DEFAULT_CONFIG = {
     "live_signal_min_shots_diff": settings.live_signal_min_shots_diff,
     "live_signal_min_on_target_diff": settings.live_signal_min_on_target_diff,
     "live_signal_min_possession_diff": settings.live_signal_min_possession_diff,
+    "telegram_send_to_main_chat": True,
+    "telegram_send_to_channel": False,
 }
 
 
@@ -34,13 +36,18 @@ def load_runtime_config() -> Dict[str, Any]:
 
     try:
         raw = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+
         if not isinstance(raw, dict):
             return DEFAULT_CONFIG.copy()
 
         merged = DEFAULT_CONFIG.copy()
         merged.update(raw)
         return merged
+
     except json.JSONDecodeError:
+        return DEFAULT_CONFIG.copy()
+    except Exception as e:
+        print(f"[RUNTIME_CONFIG] Erro ao carregar config: {e}")
         return DEFAULT_CONFIG.copy()
 
 
