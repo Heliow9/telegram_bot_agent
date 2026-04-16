@@ -121,7 +121,13 @@ class SportsDBAPI:
             "finished",
         }
 
-        return normalized in exact_statuses
+        if normalized in exact_statuses:
+            return True
+
+        if "finished" in normalized:
+            return True
+
+        return False
 
     def _build_result_from_scores(
         self,
@@ -393,8 +399,6 @@ class SportsDBAPI:
         home_score = self._safe_int(event.get("intHomeScore"))
         away_score = self._safe_int(event.get("intAwayScore"))
 
-        # CORREÇÃO CRÍTICA:
-        # só considera finalizado se o status for explicitamente final
         finished = self._is_finished_status(raw_status)
 
         result = self._build_result_from_scores(home_score, away_score) if finished else None
@@ -406,4 +410,7 @@ class SportsDBAPI:
             "away_score": away_score,
             "result": result,
             "status_text": status_text.upper(),
+            "locked": str(event.get("strLocked") or "").strip().lower(),
+            "date_event": str(event.get("dateEvent") or "").strip(),
+            "time_event": str(event.get("strTime") or "").strip(),
         }

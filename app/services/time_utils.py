@@ -13,11 +13,9 @@ def parse_event_utc(date_event: str, str_time: str) -> Optional[datetime]:
 
     raw_time = (str_time or "").strip()
 
-    # fallback quando hora vier vazia
     if not raw_time:
         raw_time = "00:00:00"
 
-    # remove timezone/sufixos comuns, ex: "15:00:00+00:00"
     raw_time = raw_time.replace("Z", "")
     if "+" in raw_time:
         raw_time = raw_time.split("+", 1)[0]

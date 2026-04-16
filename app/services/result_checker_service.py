@@ -1,3 +1,4 @@
+from datetime import timedelta
 from typing import Dict, List, Optional
 
 from app.services.sportsdb_api import SportsDBAPI
@@ -6,6 +7,7 @@ from app.services.prediction_store import (
     update_prediction_result,
     build_stats,
 )
+from app.services.time_utils import parse_event_utc, now_utc
 
 
 class ResultCheckerService:
@@ -37,6 +39,8 @@ class ResultCheckerService:
         "break",
         "et",
     }
+
+    FALLBACK_FINISH_AFTER_MINUTES = 120
 
     def __init__(self):
         self.api = SportsDBAPI()
@@ -90,6 +94,26 @@ class ResultCheckerService:
             return "2"
         return "X"
 
+    def _is_match_time_expired(self, details: Dict) -> bool:
+        date_event = str(details.get("dateEvent") or details.get("date_event") or "").strip()
+        time_event = str(details.get("strTime") or details.get("time_event") or "").strip()
+
+        event_dt_utc = parse_event_utc(date_event, time_event)
+        if event_dt_utc is None:
+            return False
+
+        deadline = event_dt_utc + timedelta(minutes=self.FALLBACK_FINISH_AFTER_MINUTES)
+        expired = now_utc() >= deadline
+
+        if expired:
+            print(
+                "[RESULT CHECKER] Fallback temporal ativado | "
+                f"date_event={date_event} | time_event={time_event} | "
+                f"deadline_utc={deadline.isoformat()} | now_utc={now_utc().isoformat()}"
+            )
+
+        return expired
+
     def _is_finished_from_details(self, details: Dict) -> bool:
         locked = self._normalize_locked(details.get("strLocked"))
         if locked == "locked":
@@ -102,20 +126,17 @@ class ResultCheckerService:
             details.get("status_text"),
         ]
 
+        normalized_status = ""
         for raw in candidates:
             if not raw:
                 continue
 
             normalized = str(raw).strip().lower()
+            if normalized:
+                normalized_status = normalized
 
             if normalized in self.FINISHED_STATUSES:
                 return True
-
-            if normalized in self.LIVE_STATUSES:
-                return False
-
-            if normalized in self.NOT_STARTED_STATUSES:
-                return False
 
             if "finished" in normalized:
                 return True
@@ -127,16 +148,22 @@ class ResultCheckerService:
             details.get("intAwayScore", details.get("away_score"))
         )
 
-        if home_score is not None and away_score is not None:
-            status = str(
-                details.get("strStatus")
-                or details.get("status")
-                or details.get("status_text")
-                or ""
-            ).strip().lower()
+        has_score = home_score is not None and away_score is not None
 
-            if status not in self.NOT_STARTED_STATUSES:
-                return True
+        if has_score and self._is_match_time_expired(details):
+            print(
+                "[RESULT CHECKER] Finalizado por fallback temporal com placar | "
+                f"status={normalized_status or '-'} | locked={locked or '-'} | "
+                f"score={home_score}x{away_score}"
+            )
+            return True
+
+        if has_score and normalized_status:
+            if normalized_status in self.NOT_STARTED_STATUSES:
+                return False
+
+            if normalized_status in self.LIVE_STATUSES:
+                return False
 
         return False
 
@@ -175,6 +202,8 @@ class ResultCheckerService:
             "result": result,
             "status_text": self._normalize_status_text(status_text),
             "locked": self._normalize_locked(details.get("strLocked")),
+            "date_event": str(details.get("dateEvent") or details.get("date_event") or "").strip(),
+            "time_event": str(details.get("strTime") or details.get("time_event") or "").strip(),
         }
 
     def _merge_result_sources(
@@ -208,6 +237,8 @@ class ResultCheckerService:
         merged_finished = raw_finished or bool((detail_result or {}).get("finished"))
         merged_status = raw_status or (detail_result or {}).get("status_text")
         merged_locked = result_data.get("locked") or (detail_result or {}).get("locked")
+        merged_date_event = result_data.get("date_event") or (detail_result or {}).get("date_event")
+        merged_time_event = result_data.get("time_event") or (detail_result or {}).get("time_event")
 
         merged_result = None
         if merged_finished:
@@ -219,6 +250,7 @@ class ResultCheckerService:
 
         is_live = False
         normalized_status = str(merged_status or "").strip().lower()
+
         if normalized_status in self.LIVE_STATUSES:
             is_live = True
 
@@ -237,6 +269,8 @@ class ResultCheckerService:
             "status_text": merged_status,
             "locked": merged_locked,
             "is_live": is_live,
+            "date_event": merged_date_event,
+            "time_event": merged_time_event,
         }
 
     def check_pending_predictions(self) -> List[Dict]:
