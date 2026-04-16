@@ -1,5 +1,6 @@
 from datetime import datetime, time, timedelta
 from zoneinfo import ZoneInfo
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
@@ -10,9 +11,12 @@ from app.db import get_db
 from app.models import Prediction, PredictionOdds
 from app.schemas import PredictionListResponse
 from app.deps import get_current_user
+from app.services.ml_model_service import MLModelService
 
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
+
+MODEL_PATH = Path("models/1x2_model.joblib")
 
 
 def _utc_naive_day_bounds():
@@ -78,6 +82,41 @@ def _serialize_prediction(prediction: Prediction):
         "result_source": prediction.result_source,
         "last_status_text": prediction.last_status_text,
         "is_live": prediction.is_live,
+    }
+
+
+def _build_model_status():
+    ml_model = MLModelService()
+    metadata = ml_model.get_metadata() if hasattr(ml_model, "get_metadata") else {}
+
+    model_loaded = ml_model.is_available()
+    features = getattr(ml_model, "features_", None) or []
+    classes = getattr(ml_model, "classes_", None) or []
+
+    last_training_at = None
+    if MODEL_PATH.exists():
+        try:
+            modified_ts = MODEL_PATH.stat().st_mtime
+            last_training_at = datetime.fromtimestamp(
+                modified_ts,
+                tz=ZoneInfo(settings.timezone),
+            ).isoformat()
+        except Exception:
+            last_training_at = None
+
+    return {
+        "model_loaded": model_loaded,
+        "model_path": str(MODEL_PATH),
+        "last_training_at": last_training_at,
+        "rows": metadata.get("rows", 0),
+        "train_rows": metadata.get("train_rows", 0),
+        "test_rows": metadata.get("test_rows", 0),
+        "accuracy": metadata.get("accuracy"),
+        "log_loss": metadata.get("log_loss"),
+        "classes": classes,
+        "class_distribution": metadata.get("class_distribution", {}),
+        "features_count": len(features),
+        "features": features,
     }
 
 
@@ -255,6 +294,11 @@ def dashboard_summary(
         "today_roi": today_roi,
         "today_roi_items": today_roi_count,
     }
+
+
+@router.get("/model-status")
+def model_status(current_user=Depends(get_current_user)):
+    return _build_model_status()
 
 
 @router.get("/predictions", response_model=PredictionListResponse)
