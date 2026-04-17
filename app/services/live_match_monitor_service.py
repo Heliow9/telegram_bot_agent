@@ -10,7 +10,10 @@ from app.services.runtime_config_service import load_runtime_config
 from app.services.sportsdb_api import SportsDBAPI
 from app.services.telegram_service import TelegramService
 from app.services.time_utils import now_local
-from app.services.prediction_store import update_prediction_live_state
+from app.services.prediction_store import (
+    get_prediction_by_fixture_id,
+    update_prediction_live_state,
+)
 
 
 class LiveMatchMonitorService:
@@ -257,14 +260,48 @@ class LiveMatchMonitorService:
 
         return all_events
 
+    def _should_skip_live_update(self, fixture_id: str) -> bool:
+        existing = get_prediction_by_fixture_id(fixture_id)
+        if not existing:
+            return False
+
+        status = str(existing.get("status") or "").strip().lower()
+        return status in {"hit", "miss"}
+
+    def _clear_not_live_if_needed(self, fixture_id: str, event: Dict):
+        existing = get_prediction_by_fixture_id(fixture_id)
+        if not existing:
+            return
+
+        status = str(existing.get("status") or "").strip().lower()
+        if status in {"hit", "miss"}:
+            return
+
+        if bool(existing.get("is_live")):
+            update_prediction_live_state(
+                fixture_id=fixture_id,
+                home_score=event.get("intHomeScore"),
+                away_score=event.get("intAwayScore"),
+                status_text=(event.get("strStatus") or "").strip() or "Não ao vivo",
+                is_live=False,
+            )
+            print(f"[LIVE] Jogo removido do modo live | fixture_id={fixture_id}")
+
     def monitor_live_matches(self):
         candidate_events = self._collect_candidate_events()
         live_events = []
 
         for event in candidate_events:
+            fixture_id = str(event.get("idEvent", "")).strip()
             status_text = (event.get("strStatus") or "").strip()
+
+            if not fixture_id:
+                continue
+
             if self._is_live_status(status_text):
                 live_events.append(event)
+            else:
+                self._clear_not_live_if_needed(fixture_id, event)
 
         print(
             f"[LIVE] Jogos candidatos: {len(candidate_events)} | "
@@ -277,11 +314,24 @@ class LiveMatchMonitorService:
                 if not fixture_id:
                     continue
 
+                if self._should_skip_live_update(fixture_id):
+                    print(
+                        f"[LIVE] Ignorando atualização live de jogo já resolvido | "
+                        f"fixture_id={fixture_id}"
+                    )
+                    continue
+
                 league_meta = event.get("_league_meta")
                 if not league_meta:
                     continue
 
                 details = self.api.get_event_details(fixture_id) or event
+
+                current_status = (details.get("strStatus") or event.get("strStatus") or "").strip()
+                if not self._is_live_status(current_status):
+                    self._clear_not_live_if_needed(fixture_id, details)
+                    continue
+
                 snapshot = self._build_snapshot(details, league_meta)
 
                 previous = self.state_service.get_fixture_state(fixture_id) or {}

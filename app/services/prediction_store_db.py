@@ -230,6 +230,14 @@ def update_prediction_live_state_db(
             print(f"[DB] Prediction não encontrada para live_state fixture_id={fixture_id}")
             return
 
+        current_status = str(item.status or "").strip().lower()
+        if current_status in {"hit", "miss"}:
+            print(
+                f"[DB] Live state ignorado para jogo resolvido | "
+                f"fixture_id={fixture_id} | status={current_status}"
+            )
+            return
+
         item.home_score = int(home_score) if home_score is not None else item.home_score
         item.away_score = int(away_score) if away_score is not None else item.away_score
         item.last_checked_at = now

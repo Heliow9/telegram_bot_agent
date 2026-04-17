@@ -34,10 +34,6 @@ def _normalize_fixture_id(value) -> str:
 
 
 def _sync_db_to_json():
-    """
-    Compatibilidade com serviços legados que ainda consomem JSON.
-    A fonte principal continua sendo o MySQL.
-    """
     db = SessionLocal()
     try:
         rows = (
@@ -115,19 +111,11 @@ def _sync_db_to_json():
 
 
 def load_predictions() -> List[Dict]:
-    """
-    Compatibilidade legada:
-    agora o JSON é regenerado a partir do banco.
-    """
     ensure_store()
     return _sync_db_to_json()
 
 
 def save_prediction(payload: dict):
-    """
-    Fonte principal: MySQL.
-    Mantém JSON sincronizado para compatibilidade.
-    """
     try:
         save_prediction_db(payload)
     except Exception as e:
