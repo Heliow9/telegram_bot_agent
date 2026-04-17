@@ -1,6 +1,6 @@
 from datetime import datetime
 from zoneinfo import ZoneInfo
-from typing import Dict, List, Set
+from typing import Dict, List, Set, Optional
 
 from app.services.daily_leagues_service import DailyLeaguesService
 from app.services.prediction_store import (
@@ -11,25 +11,34 @@ from app.services.result_checker_service import ResultCheckerService
 from app.services.telegram_service import TelegramService
 from app.services.message_formatter import format_prediction_message
 from app.services.scheduler_service import (
-    build_alert_key,
     _already_sent_alert,
     _save_sent_alert,
 )
 
 
 class PostDeploySyncService:
+    STARTUP_ALERT_WINDOW_MIN = -10
+    STARTUP_ALERT_WINDOW_MAX = 35
+
     def __init__(self):
         self.daily_service = DailyLeaguesService()
         self.result_checker = ResultCheckerService()
         self.telegram = TelegramService()
         self.tz = ZoneInfo("America/Recife")
 
+    def _now(self) -> datetime:
+        return datetime.now(self.tz)
+
     def _today(self) -> str:
-        return datetime.now(self.tz).strftime("%Y-%m-%d")
+        return self._now().strftime("%Y-%m-%d")
 
     def _fixture_date(self, payload: Dict) -> str:
         fixture = payload.get("fixture") or {}
         return str(fixture.get("date") or "").strip()
+
+    def _fixture_time(self, payload: Dict) -> str:
+        fixture = payload.get("fixture") or {}
+        return str(fixture.get("time") or "").strip()
 
     def _fixture_id(self, payload: Dict) -> str:
         fixture = payload.get("fixture") or {}
@@ -40,6 +49,68 @@ class PostDeploySyncService:
         home = fixture.get("home_team", "Casa")
         away = fixture.get("away_team", "Fora")
         return f"{home} x {away}"
+
+    def _build_startup_alert_key(self, fixture_id: str) -> str:
+        return f"{fixture_id}_startup_sync"
+
+    def _parse_fixture_datetime(self, payload: Dict) -> Optional[datetime]:
+        fixture_date = self._fixture_date(payload)
+        fixture_time = self._fixture_time(payload)
+
+        if not fixture_date:
+            return None
+
+        normalized_time = (fixture_time or "00:00:00").strip()
+        normalized_time = normalized_time.replace("Z", "")
+
+        if "+" in normalized_time:
+            normalized_time = normalized_time.split("+", 1)[0]
+
+        if normalized_time.count(":") == 1:
+            normalized_time = f"{normalized_time}:00"
+
+        raw_value = f"{fixture_date} {normalized_time}"
+
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+            try:
+                return datetime.strptime(raw_value, fmt).replace(tzinfo=self.tz)
+            except ValueError:
+                continue
+
+        return None
+
+    def _minutes_to_kickoff(self, payload: Dict) -> Optional[int]:
+        fixture_dt = self._parse_fixture_datetime(payload)
+        if not fixture_dt:
+            return None
+
+        delta = fixture_dt - self._now()
+        return int(delta.total_seconds() // 60)
+
+    def _should_send_startup_alert(self, payload: Dict) -> bool:
+        minutes_to_kickoff = self._minutes_to_kickoff(payload)
+
+        if minutes_to_kickoff is None:
+            print(
+                f"[POST_DEPLOY_SYNC] Sem horário válido para avaliar alerta startup | "
+                f"fixture_id={self._fixture_id(payload)} | jogo={self._fixture_label(payload)}"
+            )
+            return False
+
+        should_send = (
+            self.STARTUP_ALERT_WINDOW_MIN
+            <= minutes_to_kickoff
+            <= self.STARTUP_ALERT_WINDOW_MAX
+        )
+
+        print(
+            f"[POST_DEPLOY_SYNC] Janela startup | "
+            f"fixture_id={self._fixture_id(payload)} | "
+            f"jogo={self._fixture_label(payload)} | "
+            f"minutes_to_kickoff={minutes_to_kickoff} | "
+            f"send={should_send}"
+        )
+        return should_send
 
     def _deduplicate_payloads(self, payloads: List[Dict]) -> List[Dict]:
         unique: List[Dict] = []
@@ -150,11 +221,18 @@ class PostDeploySyncService:
             if not fixture_id:
                 continue
 
-            alert_key = build_alert_key(fixture_id)
-
-            if _already_sent_alert(alert_key):
+            if not self._should_send_startup_alert(payload):
                 print(
-                    f"[POST_DEPLOY_SYNC] Alerta já existia, não reenviado | "
+                    f"[POST_DEPLOY_SYNC] Fora da janela de envio startup | "
+                    f"fixture_id={fixture_id} | jogo={home_team} x {away_team}"
+                )
+                continue
+
+            startup_alert_key = self._build_startup_alert_key(fixture_id)
+
+            if _already_sent_alert(startup_alert_key):
+                print(
+                    f"[POST_DEPLOY_SYNC] Alerta startup já existia, não reenviado | "
                     f"fixture_id={fixture_id} | jogo={home_team} x {away_team}"
                 )
                 continue
@@ -164,25 +242,25 @@ class PostDeploySyncService:
                 result = self.telegram.send_message(message)
 
                 if result.get("ok"):
-                    _save_sent_alert(alert_key)
+                    _save_sent_alert(startup_alert_key)
                     sent += 1
                     print(
-                        f"[POST_DEPLOY_SYNC] Alerta pendente enviado com sucesso | "
+                        f"[POST_DEPLOY_SYNC] Alerta startup enviado com sucesso | "
                         f"fixture_id={fixture_id} | jogo={home_team} x {away_team}"
                     )
                 else:
                     print(
-                        f"[POST_DEPLOY_SYNC] Falha ao enviar alerta pendente | "
+                        f"[POST_DEPLOY_SYNC] Falha ao enviar alerta startup | "
                         f"fixture_id={fixture_id} | retorno={result}"
                     )
 
             except Exception as e:
                 print(
-                    f"[POST_DEPLOY_SYNC] Erro ao enviar alerta pendente | "
+                    f"[POST_DEPLOY_SYNC] Erro ao enviar alerta startup | "
                     f"fixture_id={fixture_id} | erro={e}"
                 )
 
-        print(f"[POST_DEPLOY_SYNC] Alertas pendentes enviados no startup: {sent}")
+        print(f"[POST_DEPLOY_SYNC] Alertas startup enviados: {sent}")
         return sent
 
     def _run_result_check(self) -> List[Dict]:

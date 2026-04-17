@@ -87,4 +87,12 @@ LEAGUES = [
         "season": "2025-2026",
         "priority": 2,
     },
+    {
+        "key": "bundesliga",
+        "name": "German Bundesliga",
+        "display_name": "Bundesliga",
+        "id": "4331",
+        "season": "2025-2026",
+        "priority": 2,
+    },
 ]

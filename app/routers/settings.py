@@ -3,7 +3,6 @@ from app.deps import get_current_user
 from app.schemas_settings import RuntimeConfigResponse, RuntimeConfigUpdate
 from app.services.runtime_config_service import load_runtime_config, save_runtime_config
 
-
 router = APIRouter(prefix="/settings", tags=["settings"])
 
 

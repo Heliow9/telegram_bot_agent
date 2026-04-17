@@ -1,22 +1,52 @@
 import unicodedata
 from datetime import datetime
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 
 import requests
 
 from app.config import settings
+from app.services.runtime_config_service import load_runtime_config
 
 
 class OddsService:
+    ROTATE_STATUS_CODES = {401, 403, 429}
+
     def __init__(self):
-        self.api_key = settings.odds_api_key
         self.base_url = "https://api.the-odds-api.com/v4"
         self.regions = settings.odds_regions
         self.markets = settings.odds_markets
         self.odds_format = settings.odds_format
 
+    def _load_api_keys(self) -> List[str]:
+        runtime = load_runtime_config()
+        raw_keys = runtime.get("odds_api_keys", [])
+
+        if not isinstance(raw_keys, list):
+            return []
+
+        cleaned = []
+        seen = set()
+
+        for item in raw_keys:
+            key = str(item or "").strip()
+            if not key:
+                continue
+            if key in seen:
+                continue
+            seen.add(key)
+            cleaned.append(key)
+
+        return cleaned
+
     def is_available(self) -> bool:
-        return bool(self.api_key)
+        return len(self._load_api_keys()) > 0
+
+    def _mask_key(self, api_key: str) -> str:
+        if not api_key:
+            return "sem_key"
+        if len(api_key) <= 8:
+            return "***"
+        return f"{api_key[:4]}...{api_key[-4:]}"
 
     # ---------------------------------------------------------------------
     # NORMALIZAÇÃO
@@ -54,7 +84,6 @@ class OddsService:
         normalized = self._normalize_league_name(league_name)
 
         mapping = {
-            # já usadas
             "premier league": "soccer_epl",
             "brasileirao serie a": "soccer_brazil_campeonato",
             "argentina liga profesional": "soccer_argentina_primera_division",
@@ -62,8 +91,8 @@ class OddsService:
             "turquia super lig": "soccer_turkey_super_league",
             "liga dos campeoes": "soccer_uefa_champs_league",
             "championship": "soccer_efl_champ",
+            "bundesliga": "soccer_germany_bundesliga",
 
-            # novas cobertas
             "liga europa": "soccer_uefa_europa_league",
             "uefa europa league": "soccer_uefa_europa_league",
             "europa league": "soccer_uefa_europa_league",
@@ -226,6 +255,50 @@ class OddsService:
 
         return None
 
+    def _request_with_key(
+        self,
+        api_key: str,
+        sport_key: str,
+    ) -> Tuple[Optional[List[Dict[str, Any]]], Optional[int], Optional[str]]:
+        url = f"{self.base_url}/sports/{sport_key}/odds"
+
+        params = {
+            "apiKey": api_key,
+            "regions": self.regions,
+            "markets": self.markets,
+            "oddsFormat": self.odds_format,
+        }
+
+        try:
+            response = requests.get(url, params=params, timeout=20)
+
+            if response.status_code == 404:
+                return None, 404, "Liga não disponível na API"
+
+            if response.status_code in self.ROTATE_STATUS_CODES:
+                return None, response.status_code, response.text[:300]
+
+            response.raise_for_status()
+
+            data = response.json()
+            if not isinstance(data, list):
+                return None, response.status_code, f"Payload inesperado: {type(data)}"
+
+            return data, response.status_code, None
+
+        except requests.HTTPError as e:
+            status_code = e.response.status_code if e.response is not None else None
+            body = ""
+            if e.response is not None:
+                try:
+                    body = e.response.text[:300]
+                except Exception:
+                    body = ""
+            return None, status_code, body or str(e)
+
+        except Exception as e:
+            return None, None, str(e)
+
     # ---------------------------------------------------------------------
     # BUSCA PRINCIPAL
     # ---------------------------------------------------------------------
@@ -236,8 +309,10 @@ class OddsService:
         league_name: str,
         match_date: str = "",
     ) -> Optional[Dict[str, Any]]:
-        if not self.is_available():
-            print("[ODDS] Serviço indisponível: api_key ausente.")
+        api_keys = self._load_api_keys()
+
+        if not api_keys:
+            print("[ODDS] Serviço indisponível: nenhuma odds_api_keys configurada.")
             return None
 
         sport_key = self._find_sport_key(league_name)
@@ -246,66 +321,73 @@ class OddsService:
             print(f"[ODDS] Liga sem cobertura mapeada internamente: {league_name}")
             return None
 
-        url = f"{self.base_url}/sports/{sport_key}/odds"
+        last_error = None
 
-        params = {
-            "apiKey": self.api_key,
-            "regions": self.regions,
-            "markets": self.markets,
-            "oddsFormat": self.odds_format,
-        }
+        for index, api_key in enumerate(api_keys, start=1):
+            masked = self._mask_key(api_key)
 
-        try:
-            response = requests.get(url, params=params, timeout=20)
+            data, status_code, error = self._request_with_key(api_key, sport_key)
 
-            if response.status_code == 404:
-                print(
-                    f"[ODDS] Liga não disponível na API para a chave "
-                    f"{sport_key}: {league_name}"
-                )
-                return None
+            if data is not None:
+                candidates: List[Dict[str, Any]] = []
 
-            response.raise_for_status()
-            data = response.json()
+                for game in data:
+                    if not self._same_match_date(game.get("commence_time"), match_date):
+                        continue
 
-            if not isinstance(data, list):
-                print(f"[ODDS] Payload inesperado para {league_name}: {type(data)}")
-                return None
+                    if self._match_game(game, home_team, away_team):
+                        candidates.append(game)
 
-            candidates: List[Dict[str, Any]] = []
-
-            for game in data:
-                if not self._same_match_date(game.get("commence_time"), match_date):
-                    continue
-
-                if self._match_game(game, home_team, away_team):
-                    candidates.append(game)
-
-            if not candidates:
-                print(
-                    f"[ODDS] Jogo não encontrado na liga {league_name} "
-                    f"({sport_key}): {home_team} x {away_team} | data={match_date}"
-                )
-                return None
-
-            for game in candidates:
-                odds = self._extract_h2h_odds(game, home_team, away_team)
-                if odds:
+                if not candidates:
                     print(
-                        f"[ODDS] Odds encontradas | {league_name} | "
-                        f"{home_team} x {away_team} | bookmaker={odds.get('bookmaker')}"
+                        f"[ODDS] Jogo não encontrado na liga {league_name} "
+                        f"({sport_key}) com key #{index} [{masked}] | "
+                        f"{home_team} x {away_team} | data={match_date}"
                     )
-                    return odds
+                    return None
+
+                for game in candidates:
+                    odds = self._extract_h2h_odds(game, home_team, away_team)
+                    if odds:
+                        print(
+                            f"[ODDS] Odds encontradas | {league_name} | "
+                            f"{home_team} x {away_team} | bookmaker={odds.get('bookmaker')} | "
+                            f"key #{index} [{masked}]"
+                        )
+                        return odds
+
+                print(
+                    f"[ODDS] Odds não encontradas nos bookmakers | "
+                    f"{league_name} | {home_team} x {away_team} | "
+                    f"key #{index} [{masked}]"
+                )
+                return None
+
+            last_error = error
+
+            if status_code == 404:
+                print(
+                    f"[ODDS] Liga não disponível na API para a chave {sport_key}: "
+                    f"{league_name}"
+                )
+                return None
+
+            if status_code in self.ROTATE_STATUS_CODES:
+                print(
+                    f"[ODDS] Key bloqueada/limitada, tentando próxima | "
+                    f"key #{index} [{masked}] | status={status_code}"
+                )
+                continue
 
             print(
-                f"[ODDS] Odds não encontradas nos bookmakers | "
-                f"{league_name} | {home_team} x {away_team}"
+                f"[ODDS] Erro ao buscar odds com key #{index} [{masked}] | "
+                f"liga={league_name} | jogo={home_team} x {away_team} | "
+                f"status={status_code} | erro={error}"
             )
             return None
 
-        except Exception as e:
-            print(
-                f"[ODDS] Erro ao buscar odds | "
-                f"liga={league_name} | jogo={home_team} x {away_team} | erro={e}"
-            )
-            return None
+        print(
+            f"[ODDS] Todas as keys falharam | liga={league_name} | "
+            f"jogo={home_team} x {away_team} | último_erro={last_error}"
+        )
+        return None

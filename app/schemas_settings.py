@@ -1,10 +1,7 @@
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, List
 
 
-# ===============================
-# RESPONSE (retorno da API)
-# ===============================
 class RuntimeConfigResponse(BaseModel):
     value_bet_edge: float
 
@@ -16,14 +13,12 @@ class RuntimeConfigResponse(BaseModel):
     live_signal_min_on_target_diff: int
     live_signal_min_possession_diff: int
 
-    # 🔥 NOVO - TELEGRAM
     telegram_send_to_main_chat: bool
     telegram_send_to_channel: bool
 
+    odds_api_keys: List[str]
 
-# ===============================
-# UPDATE (PATCH parcial)
-# ===============================
+
 class RuntimeConfigUpdate(BaseModel):
     value_bet_edge: Optional[float] = None
 
@@ -35,6 +30,7 @@ class RuntimeConfigUpdate(BaseModel):
     live_signal_min_on_target_diff: Optional[int] = None
     live_signal_min_possession_diff: Optional[int] = None
 
-    # 🔥 TELEGRAM (toggle no dashboard)
     telegram_send_to_main_chat: Optional[bool] = None
     telegram_send_to_channel: Optional[bool] = None
+
+    odds_api_keys: Optional[List[str]] = None

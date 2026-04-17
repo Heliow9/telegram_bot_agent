@@ -18,6 +18,7 @@ DEFAULT_CONFIG = {
     "live_signal_min_possession_diff": settings.live_signal_min_possession_diff,
     "telegram_send_to_main_chat": True,
     "telegram_send_to_channel": False,
+    "odds_api_keys": [],
 }
 
 
@@ -31,6 +32,36 @@ def ensure_runtime_config() -> None:
         )
 
 
+def _sanitize_runtime_config(data: Dict[str, Any]) -> Dict[str, Any]:
+    sanitized = DEFAULT_CONFIG.copy()
+    sanitized.update(data or {})
+
+    raw_keys = sanitized.get("odds_api_keys", [])
+
+    if isinstance(raw_keys, str):
+        raw_keys = [line.strip() for line in raw_keys.splitlines() if line.strip()]
+    elif not isinstance(raw_keys, list):
+        raw_keys = []
+
+    cleaned_keys = []
+    seen = set()
+
+    for item in raw_keys:
+        key = str(item or "").strip()
+        if not key:
+            continue
+        if key in seen:
+            continue
+        seen.add(key)
+        cleaned_keys.append(key)
+
+    sanitized["odds_api_keys"] = cleaned_keys
+    sanitized["telegram_send_to_main_chat"] = bool(sanitized.get("telegram_send_to_main_chat", True))
+    sanitized["telegram_send_to_channel"] = bool(sanitized.get("telegram_send_to_channel", False))
+
+    return sanitized
+
+
 def load_runtime_config() -> Dict[str, Any]:
     ensure_runtime_config()
 
@@ -40,9 +71,7 @@ def load_runtime_config() -> Dict[str, Any]:
         if not isinstance(raw, dict):
             return DEFAULT_CONFIG.copy()
 
-        merged = DEFAULT_CONFIG.copy()
-        merged.update(raw)
-        return merged
+        return _sanitize_runtime_config(raw)
 
     except json.JSONDecodeError:
         return DEFAULT_CONFIG.copy()
@@ -57,9 +86,11 @@ def save_runtime_config(data: Dict[str, Any]) -> Dict[str, Any]:
     current = load_runtime_config()
     current.update(data)
 
+    sanitized = _sanitize_runtime_config(current)
+
     CONFIG_PATH.write_text(
-        json.dumps(current, ensure_ascii=False, indent=2),
+        json.dumps(sanitized, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
 
-    return current
+    return sanitized

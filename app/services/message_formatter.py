@@ -14,6 +14,7 @@ LEAGUE_EMOJIS = {
     "Copa Sul-Americana": "🌎",
     "Libertadores": "🏆",
     "Championship": "🏴",
+    "Bundesliga": "🇩🇪",
 }
 
 

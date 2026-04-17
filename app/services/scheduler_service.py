@@ -179,6 +179,7 @@ def _send_ranked_summary(payloads: list[dict], period_label: str):
         "Championship",
         "Liga dos Campeões",
         "Liga Europa",
+        "Bundesliga",
         "Argentina Liga Profesional",
         "Itália Série A",
         "Turquia Super Lig",
@@ -222,7 +223,7 @@ def job_send_morning_summary():
         result = telegram.send_message(
             "📭 *Nenhum jogo encontrado pela manhã hoje.*\n\n"
             "Ligas monitoradas: Brasileirão A, Brasileirão B, Premier League, Championship, "
-            "Liga dos Campeões, Liga Europa, Argentina Liga Profesional, Itália Série A, "
+            "Liga dos Campeões, Liga Europa, Bundesliga, Argentina Liga Profesional, Itália Série A, "
             "Turquia Super Lig, Libertadores e Copa Sul-Americana."
         )
         print(f"[SCHEDULER] Aviso de manhã sem jogos enviado: {result}")
@@ -264,7 +265,7 @@ def job_send_afternoon_summary():
         result = telegram.send_message(
             "📭 *Nenhum jogo encontrado para a tarde/noite hoje.*\n\n"
             "Ligas monitoradas: Brasileirão A, Brasileirão B, Premier League, Championship, "
-            "Liga dos Campeões, Liga Europa, Argentina Liga Profesional, Itália Série A, "
+            "Liga dos Campeões, Liga Europa, Bundesliga, Argentina Liga Profesional, Itália Série A, "
             "Turquia Super Lig, Libertadores e Copa Sul-Americana."
         )
         print(f"[SCHEDULER] Aviso de tarde/noite sem jogos enviado: {result}")
@@ -508,10 +509,6 @@ def job_daily_training():
 
 
 def run_today_audit():
-    """
-    Auditoria simples do dia:
-    reexecuta checker de resultados para pegar inconsistências do dia atual.
-    """
     started = _job_log_start("run_today_audit")
     try:
         updates = result_checker.check_pending_predictions()
