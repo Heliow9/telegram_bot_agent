@@ -103,7 +103,7 @@ async def lifespan(app: FastAPI):
     Base.metadata.create_all(bind=engine)
 
     # limpa dataset/modelo local ao subir
-    reset_training_artifacts()
+
 
     # mantém scheduler e pós-deploy fora da thread principal da API
     start_background_jobs()
