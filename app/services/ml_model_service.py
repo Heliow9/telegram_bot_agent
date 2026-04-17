@@ -70,13 +70,10 @@ class MLModelService:
     def _build_aligned_dataframe(self, features: Dict) -> pd.DataFrame:
         raw_df = pd.DataFrame([features or {}])
 
-        # Se o modelo foi salvo com ordem oficial de features,
-        # garantimos a mesma ordem/mesmas colunas da fase de treino.
         if self.features_:
             aligned = raw_df.reindex(columns=self.features_, fill_value=0)
             return aligned
 
-        # fallback legado
         return raw_df.fillna(0)
 
     def predict_proba(self, features: Dict) -> Optional[Dict[str, float]]:

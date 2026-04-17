@@ -2,6 +2,7 @@ from contextlib import asynccontextmanager
 import logging
 import os
 import threading
+from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -25,6 +26,28 @@ logger = logging.getLogger(__name__)
 
 _scheduler_started = False
 _post_deploy_sync_ran = False
+
+
+def reset_training_artifacts() -> None:
+    logger.info("🧹 Resetando artefatos de treino (dataset/modelo)...")
+
+    paths = [
+        Path("data/historical_training_matches.csv"),
+        Path("models/1x2_model.joblib"),
+        Path("models/1x2_model_metadata.json"),
+    ]
+
+    for path in paths:
+        try:
+            if path.exists():
+                path.unlink()
+                logger.info("🗑️ Removido: %s", path)
+            else:
+                logger.info("ℹ️ Não encontrado (ok): %s", path)
+        except Exception as e:
+            logger.warning("⚠️ Erro ao remover %s: %s", path, e)
+
+    logger.info("✅ Reset concluído")
 
 
 def safe_start_scheduler() -> None:
@@ -78,6 +101,9 @@ async def lifespan(app: FastAPI):
     logger.info("📊 Ambiente: %s", settings.app_env)
 
     Base.metadata.create_all(bind=engine)
+
+    # limpa dataset/modelo local ao subir
+    reset_training_artifacts()
 
     # mantém scheduler e pós-deploy fora da thread principal da API
     start_background_jobs()

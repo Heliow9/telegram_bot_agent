@@ -13,9 +13,6 @@ from app.services.value_bet_service import ValueBetService
 
 
 class AnalysisService:
-    ML_BLEND_WEIGHT = 0.65
-    HEURISTIC_BLEND_WEIGHT = 0.35
-
     def __init__(self):
         self.api = SportsDBAPI()
         self.ml_model = MLModelService()
@@ -46,6 +43,27 @@ class AnalysisService:
             "2": p2 / total,
         }
 
+    def _get_dynamic_ml_weight(self) -> float:
+        metadata = self.ml_model.get_metadata() if self.ml_model else {}
+        rows = int(metadata.get("rows", 0) or 0)
+        accuracy = float(metadata.get("accuracy", 0.0) or 0.0)
+
+        if rows < 80:
+            return 0.20
+        if rows < 150:
+            return 0.30
+        if rows < 300:
+            return 0.40
+
+        if accuracy >= 0.56:
+            return 0.65
+        if accuracy >= 0.50:
+            return 0.50
+        if accuracy >= 0.45:
+            return 0.35
+
+        return 0.25
+
     def _blend_probabilities(
         self,
         heuristic_analysis: Dict,
@@ -62,27 +80,57 @@ class AnalysisService:
 
         ml_probs = self._normalize_probs(ml_probs)
 
+        ml_weight = self._get_dynamic_ml_weight()
+        heuristic_weight = 1.0 - ml_weight
+
         blended = {
-            "1": (
-                ml_probs["1"] * self.ML_BLEND_WEIGHT
-                + heuristic_probs["1"] * self.HEURISTIC_BLEND_WEIGHT
-            ),
-            "X": (
-                ml_probs["X"] * self.ML_BLEND_WEIGHT
-                + heuristic_probs["X"] * self.HEURISTIC_BLEND_WEIGHT
-            ),
-            "2": (
-                ml_probs["2"] * self.ML_BLEND_WEIGHT
-                + heuristic_probs["2"] * self.HEURISTIC_BLEND_WEIGHT
-            ),
+            "1": ml_probs["1"] * ml_weight + heuristic_probs["1"] * heuristic_weight,
+            "X": ml_probs["X"] * ml_weight + heuristic_probs["X"] * heuristic_weight,
+            "2": ml_probs["2"] * ml_weight + heuristic_probs["2"] * heuristic_weight,
         }
 
-        return self._normalize_probs(blended), "ml_blend"
+        source = "ml_blend" if ml_weight > 0 else "heuristic"
+        return self._normalize_probs(blended), source
 
-    def _confidence_from_probability(self, best_probability: float) -> str:
-        if best_probability >= 0.56:
+    def _confidence_from_probability(
+        self,
+        best_probability: float,
+        raw_ml_probs: Optional[Dict[str, float]],
+        features: Dict,
+    ) -> str:
+        confidence_score = 0
+
+        if best_probability >= 0.60:
+            confidence_score += 2
+        elif best_probability >= 0.54:
+            confidence_score += 1
+
+        min_sample = min(
+            int(features.get("sample_home", 0) or 0),
+            int(features.get("sample_away", 0) or 0),
+        )
+
+        if min_sample >= 7:
+            confidence_score += 2
+        elif min_sample >= 5:
+            confidence_score += 1
+
+        form_gap = abs(float(features.get("form_diff", 0.0) or 0.0))
+        rank_gap = abs(float(features.get("rank_diff", 0.0) or 0.0))
+
+        if form_gap >= 0.18:
+            confidence_score += 1
+        if rank_gap >= 0.25:
+            confidence_score += 1
+
+        if raw_ml_probs:
+            ordered = sorted(raw_ml_probs.values(), reverse=True)
+            if len(ordered) >= 2 and (ordered[0] - ordered[1]) >= 0.12:
+                confidence_score += 1
+
+        if confidence_score >= 5:
             return "alta"
-        if best_probability >= 0.45:
+        if confidence_score >= 3:
             return "média"
         return "baixa"
 
@@ -148,7 +196,12 @@ class AnalysisService:
         options = {"1": probs["1"], "X": probs["X"], "2": probs["2"]}
         suggested_pick = max(options, key=options.get)
         best_probability = options[suggested_pick]
-        confidence = self._confidence_from_probability(best_probability)
+
+        confidence = self._confidence_from_probability(
+            best_probability=best_probability,
+            raw_ml_probs=raw_ml_probs,
+            features=features,
+        )
 
         analysis = {
             **heuristic_analysis,

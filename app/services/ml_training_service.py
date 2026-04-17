@@ -9,6 +9,8 @@ from sklearn.metrics import accuracy_score, log_loss
 from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
 
+from app.services.time_utils import now_local
+
 
 TRAINING_DATA_PATH = Path("data/historical_training_matches.csv")
 MODEL_PATH = Path("models/1x2_model.joblib")
@@ -16,7 +18,7 @@ METADATA_PATH = Path("models/1x2_model_metadata.json")
 
 
 class MLTrainingService:
-    MIN_ROWS = 60
+    MIN_ROWS = 20
     MIN_CLASSES = 2
     TEST_SIZE = 0.25
     RANDOM_STATE = 42
@@ -28,9 +30,14 @@ class MLTrainingService:
                 solver="lbfgs",
                 max_iter=1000,
                 class_weight="balanced",
-                multi_class="auto",
             )),
         ])
+
+    def _can_use_stratify(self, y: pd.Series) -> bool:
+        counts = y.value_counts()
+        if counts.empty:
+            return False
+        return counts.min() >= 2
 
     def train(self):
         if not TRAINING_DATA_PATH.exists():
@@ -80,17 +87,30 @@ class MLTrainingService:
         print(f"[ML TRAIN] Classes: {class_counts}")
         print(f"[ML TRAIN] Features usadas: {list(X.columns)}")
 
+        use_stratify = self._can_use_stratify(y)
+        if not use_stratify:
+            print(
+                "[ML TRAIN] Split sem estratificação: há classes com menos de 2 exemplos."
+            )
+
         try:
             X_train, X_test, y_train, y_test = train_test_split(
                 X,
                 y,
                 test_size=self.TEST_SIZE,
                 random_state=self.RANDOM_STATE,
-                stratify=y if y.nunique() > 1 else None,
+                stratify=y if use_stratify else None,
             )
         except ValueError as e:
-            print(f"[ML TRAIN] Falha no split estratificado: {e}")
+            print(f"[ML TRAIN] Falha no split: {e}")
             print("[ML TRAIN] Treino cancelado para evitar modelo ruim.")
+            return
+
+        train_class_counts = y_train.value_counts().to_dict()
+        test_class_counts = y_test.value_counts().to_dict()
+
+        if len(set(y_train.unique())) < 2:
+            print("[ML TRAIN] Treino cancelado: conjunto de treino ficou com menos de 2 classes.")
             return
 
         model = self._build_model()
@@ -100,20 +120,26 @@ class MLTrainingService:
         y_prob = model.predict_proba(X_test)
 
         acc = accuracy_score(y_test, y_pred)
+
         try:
             ll = log_loss(y_test, y_prob, labels=list(model.classes_))
         except Exception:
             ll = None
 
         metadata = {
+            "trained_at": now_local().isoformat(),
             "rows": int(len(df)),
             "train_rows": int(len(X_train)),
             "test_rows": int(len(X_test)),
             "classes": list(model.classes_),
             "class_distribution": class_counts,
+            "train_class_distribution": train_class_counts,
+            "test_class_distribution": test_class_counts,
             "features": list(X.columns),
+            "features_count": int(len(X.columns)),
             "accuracy": round(float(acc), 4),
             "log_loss": round(float(ll), 4) if ll is not None else None,
+            "used_stratify": bool(use_stratify),
         }
 
         MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -137,5 +163,5 @@ class MLTrainingService:
         print(f"[ML TRAIN] Metadata salva em {METADATA_PATH}")
         print(
             f"[ML TRAIN] Métricas | accuracy={metadata['accuracy']} | "
-            f"log_loss={metadata['log_loss']}"
+            f"log_loss={metadata['log_loss']} | stratify={metadata['used_stratify']}"
         )

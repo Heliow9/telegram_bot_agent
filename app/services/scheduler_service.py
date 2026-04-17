@@ -496,10 +496,12 @@ def job_daily_training():
     print(f"[TRAINING] Rodando treino diário: {now_local()}")
 
     try:
-        training_dataset_service.append_resolved_predictions_to_dataset()
+        added = training_dataset_service.append_resolved_predictions_to_dataset()
+        print(f"[TRAINING] Dataset atualizado | novas linhas líquidas={added}")
+
         ml_training_service.train()
         print("[TRAINING] Treino diário concluído com sucesso.")
-        _job_log_end("job_daily_training", started, success=True)
+        _job_log_end("job_daily_training", started, success=True, added=added)
     except Exception as e:
         print(f"[TRAINING] Erro no treino diário: {e}")
         _job_log_end("job_daily_training", started, success=False)

@@ -107,7 +107,7 @@ def _build_model_status():
     return {
         "model_loaded": model_loaded,
         "model_path": str(MODEL_PATH),
-        "last_training_at": last_training_at,
+        "last_training_at": metadata.get("trained_at") or last_training_at,
         "rows": metadata.get("rows", 0),
         "train_rows": metadata.get("train_rows", 0),
         "test_rows": metadata.get("test_rows", 0),

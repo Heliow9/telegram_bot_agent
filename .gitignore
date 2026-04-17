@@ -22,3 +22,6 @@ data/
 # sistema
 .DS_Store
 Thumbs.db
+
+data/
+models/
