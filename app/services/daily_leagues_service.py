@@ -1,6 +1,6 @@
 from datetime import datetime
 from zoneinfo import ZoneInfo
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 
 from app.constants import LEAGUES
 from app.services.sportsdb_api import SportsDBAPI
@@ -24,41 +24,88 @@ class DailyLeaguesService:
     def _today(self) -> str:
         return self._now_local().strftime("%Y-%m-%d")
 
+    def _normalize_time(self, raw_time: str) -> str:
+        normalized_time = str(raw_time or "").strip()
+
+        if not normalized_time:
+            return "00:00:00"
+
+        normalized_time = normalized_time.replace("Z", "")
+
+        if "+" in normalized_time:
+            normalized_time = normalized_time.split("+", 1)[0]
+
+        if normalized_time.count(":") == 1:
+            normalized_time = f"{normalized_time}:00"
+
+        return normalized_time
+
+    def _parse_datetime_with_tz(
+        self,
+        date_str: str,
+        time_str: str,
+        tz: ZoneInfo,
+    ) -> Optional[datetime]:
+        if not date_str:
+            return None
+
+        normalized_time = self._normalize_time(time_str)
+        raw_value = f"{date_str} {normalized_time}"
+
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+            try:
+                return datetime.strptime(raw_value, fmt).replace(tzinfo=tz)
+            except ValueError:
+                continue
+
+        return None
+
     def _parse_local_datetime_from_event(self, event: Dict) -> Optional[datetime]:
         date_event_local = str(event.get("dateEventLocal") or "").strip()
         time_event_local = str(event.get("strTimeLocal") or "").strip()
 
         if date_event_local:
-            if not time_event_local:
-                time_event_local = "00:00:00"
-
-            normalized_time = time_event_local.replace("Z", "")
-            if "+" in normalized_time:
-                normalized_time = normalized_time.split("+", 1)[0]
-            if normalized_time.count(":") == 1:
-                normalized_time = f"{normalized_time}:00"
-
-            raw_value = f"{date_event_local} {normalized_time}"
-
-            for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
-                try:
-                    return datetime.strptime(raw_value, fmt).replace(tzinfo=self.tz)
-                except ValueError:
-                    continue
+            return self._parse_datetime_with_tz(
+                date_event_local,
+                time_event_local,
+                self.tz,
+            )
 
         return None
 
-    def _is_event_for_target_local_date(self, event: Dict, target_date: str) -> bool:
-        date_event_local = str(event.get("dateEventLocal") or "").strip()
+    def _parse_utc_event_as_local(self, event: Dict) -> Optional[datetime]:
         date_event = str(event.get("dateEvent") or "").strip()
+        time_event = str(event.get("strTime") or "").strip()
 
-        if date_event_local and date_event_local == target_date:
-            return True
+        dt_utc = self._parse_datetime_with_tz(
+            date_event,
+            time_event,
+            ZoneInfo("UTC"),
+        )
 
+        if dt_utc is None:
+            return None
+
+        return dt_utc.astimezone(self.tz)
+
+    def _is_event_for_target_local_date(self, event: Dict, target_date: str) -> bool:
+        # 1) Prioridade para a data local já fornecida pela API
+        date_event_local = str(event.get("dateEventLocal") or "").strip()
+        if date_event_local:
+            return date_event_local == target_date
+
+        # 2) Se tiver datetime local montável, usa isso
         local_dt = self._parse_local_datetime_from_event(event)
-        if local_dt and local_dt.strftime("%Y-%m-%d") == target_date:
-            return True
+        if local_dt is not None:
+            return local_dt.strftime("%Y-%m-%d") == target_date
 
+        # 3) Fallback seguro: converte dateEvent + strTime (UTC) para local
+        utc_as_local = self._parse_utc_event_as_local(event)
+        if utc_as_local is not None:
+            return utc_as_local.strftime("%Y-%m-%d") == target_date
+
+        # 4) Último fallback bruto
+        date_event = str(event.get("dateEvent") or "").strip()
         return date_event == target_date
 
     def _events_for_league_on_date(self, league_meta: Dict, date_str: str) -> List[Dict]:
@@ -73,11 +120,16 @@ class DailyLeaguesService:
             if self._is_event_for_target_local_date(event, date_str):
                 filtered_events.append(event)
             else:
+                parsed_local = self._parse_local_datetime_from_event(event)
+                parsed_utc_as_local = self._parse_utc_event_as_local(event)
+
                 print(
                     f"[DAILY][DROP] {league_meta['display_name']} | "
                     f"evento={event.get('strEvent')} | "
                     f"dateEvent={event.get('dateEvent')} {event.get('strTime')} | "
-                    f"dateEventLocal={event.get('dateEventLocal')} {event.get('strTimeLocal')}"
+                    f"dateEventLocal={event.get('dateEventLocal')} {event.get('strTimeLocal')} | "
+                    f"parsedLocal={parsed_local.isoformat() if parsed_local else None} | "
+                    f"utcAsLocal={parsed_utc_as_local.isoformat() if parsed_utc_as_local else None}"
                 )
 
         print(
@@ -89,7 +141,7 @@ class DailyLeaguesService:
 
         return filtered_events
 
-    def _select_events(self, events: List[Dict], selector_name: str) -> tuple[List[Dict], str]:
+    def _select_events(self, events: List[Dict], selector_name: str) -> Tuple[List[Dict], str]:
         if selector_name == "morning":
             return filter_morning_events(events), "Manhã"
 
@@ -106,7 +158,7 @@ class DailyLeaguesService:
                 "Janela 30min",
             )
 
-        if selector_name == "all_day":
+        if selector_name in ("all_day", "full_day", "day_full"):
             return events, "Dia inteiro"
 
         return [], selector_name
@@ -152,6 +204,10 @@ class DailyLeaguesService:
         return self.analysis_service.sort_by_best_picks(payloads)
 
     def get_all_day_payloads(self, date_str: Optional[str] = None) -> List[Dict]:
+        target_date = date_str or self._today()
+        return self._build_payloads_for_date(target_date, "all_day")
+
+    def get_full_day_payloads(self, date_str: Optional[str] = None) -> List[Dict]:
         target_date = date_str or self._today()
         return self._build_payloads_for_date(target_date, "all_day")
 
