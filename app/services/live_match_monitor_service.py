@@ -10,6 +10,7 @@ from app.services.runtime_config_service import load_runtime_config
 from app.services.sportsdb_api import SportsDBAPI
 from app.services.telegram_service import TelegramService
 from app.services.time_utils import now_local
+from app.services.prediction_store import update_prediction_live_state
 
 
 class LiveMatchMonitorService:
@@ -306,6 +307,14 @@ class LiveMatchMonitorService:
                     snapshot["sent_checkpoints"] = sorted(
                         set(sent_checkpoints + [checkpoint])
                     )
+
+                update_prediction_live_state(
+                    fixture_id=fixture_id,
+                    home_score=snapshot.get("home_score"),
+                    away_score=snapshot.get("away_score"),
+                    status_text=snapshot.get("status_text") or snapshot.get("match_clock"),
+                    is_live=True,
+                )
 
                 self.state_service.update_fixture_state(fixture_id, snapshot)
 

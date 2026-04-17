@@ -198,7 +198,7 @@ def update_prediction_market_odds_db(
 
     db = SessionLocal()
     try:
-        item = db.query(Prediction).filter(Prediction.fixture_id == str(fixture_id)).first()
+        item = db.query(Prediction).filter(Prediction.fixture_id == str(fixture_id).strip()).first()
         if not item or not item.odds:
             return
 
@@ -213,10 +213,52 @@ def update_prediction_market_odds_db(
         db.close()
 
 
+def update_prediction_live_state_db(
+    fixture_id: str,
+    home_score: Optional[int],
+    away_score: Optional[int],
+    status_text: Optional[str] = None,
+    is_live: bool = True,
+):
+    db = SessionLocal()
+    try:
+        fixture_id = str(fixture_id).strip()
+        now = datetime.utcnow()
+
+        item = db.query(Prediction).filter(Prediction.fixture_id == fixture_id).first()
+        if not item:
+            print(f"[DB] Prediction não encontrada para live_state fixture_id={fixture_id}")
+            return
+
+        item.home_score = int(home_score) if home_score is not None else item.home_score
+        item.away_score = int(away_score) if away_score is not None else item.away_score
+        item.last_checked_at = now
+        item.last_status_text = status_text
+        item.is_live = bool(is_live)
+
+        if bool(is_live) and item.started_at is None:
+            item.started_at = now
+
+        db.commit()
+
+        print(
+            f"[DB] Live state atualizado | fixture_id={fixture_id} | "
+            f"placar={item.home_score}x{item.away_score} | "
+            f"status_text={status_text} | is_live={is_live}"
+        )
+
+    except Exception as e:
+        db.rollback()
+        print(f"[DB] Erro ao atualizar live state fixture_id={fixture_id}: {e}")
+        raise
+    finally:
+        db.close()
+
+
 def get_prediction_db_by_fixture_id(fixture_id: str) -> Optional[Dict]:
     db = SessionLocal()
     try:
-        item = db.query(Prediction).filter(Prediction.fixture_id == str(fixture_id)).first()
+        item = db.query(Prediction).filter(Prediction.fixture_id == str(fixture_id).strip()).first()
         if not item:
             return None
 

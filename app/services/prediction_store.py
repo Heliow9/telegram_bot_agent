@@ -8,6 +8,7 @@ from app.services.prediction_store_db import (
     save_prediction_db,
     update_prediction_result_db,
     update_prediction_market_odds_db,
+    update_prediction_live_state_db,
 )
 
 
@@ -231,6 +232,31 @@ def update_prediction_market_odds(
             _sync_db_to_json()
         except Exception as sync_error:
             print(f"[PREDICTION_STORE][JSON] Erro ao sincronizar após update_prediction_market_odds: {sync_error}")
+
+
+def update_prediction_live_state(
+    fixture_id: str,
+    home_score: Optional[int],
+    away_score: Optional[int],
+    status_text: Optional[str] = None,
+    is_live: bool = True,
+):
+    try:
+        update_prediction_live_state_db(
+            fixture_id=fixture_id,
+            home_score=home_score,
+            away_score=away_score,
+            status_text=status_text,
+            is_live=is_live,
+        )
+    except Exception as e:
+        print(f"[PREDICTION_STORE][DB] Erro ao atualizar live state no MySQL: {e}")
+        raise
+    finally:
+        try:
+            _sync_db_to_json()
+        except Exception as sync_error:
+            print(f"[PREDICTION_STORE][JSON] Erro ao sincronizar após update_prediction_live_state: {sync_error}")
 
 
 def get_pending_predictions() -> List[Dict]:
