@@ -5,6 +5,7 @@ from app.services.sportsdb_api import SportsDBAPI
 from app.services.prediction_store import (
     get_pending_predictions,
     update_prediction_result,
+    update_prediction_live_state,
     build_stats,
 )
 from app.services.time_utils import parse_event_utc, now_utc
@@ -315,9 +316,24 @@ class ResultCheckerService:
                 continue
 
             if not merged.get("finished"):
+                try:
+                    update_prediction_live_state(
+                        fixture_id=fixture_id,
+                        home_score=merged.get("home_score"),
+                        away_score=merged.get("away_score"),
+                        status_text=merged.get("status_text"),
+                        is_live=merged.get("is_live", False),
+                    )
+                except Exception as e:
+                    print(
+                        f"[RESULT CHECKER] Erro ao atualizar live state fixture={fixture_id}: {e}"
+                    )
+
                 print(
                     f"[RESULT CHECKER] Ainda não finalizado: {fixture_id} | "
-                    f"status={merged.get('status_text')} | locked={merged.get('locked')}"
+                    f"status={merged.get('status_text')} | "
+                    f"locked={merged.get('locked')} | "
+                    f"is_live={merged.get('is_live')}"
                 )
                 continue
 

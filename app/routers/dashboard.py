@@ -4,7 +4,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
-from sqlalchemy import func, case, desc
+from sqlalchemy import func, case, desc, and_
 
 from app.config import settings
 from app.db import get_db
@@ -74,11 +74,11 @@ def _serialize_prediction(prediction: Prediction):
         "home_score": prediction.home_score,
         "away_score": prediction.away_score,
         "features_json": prediction.features_json,
-        "created_at": prediction.created_at,
-        "checked_at": prediction.checked_at,
-        "started_at": prediction.started_at,
-        "finished_at": prediction.finished_at,
-        "last_checked_at": prediction.last_checked_at,
+        "created_at": prediction.created_at.isoformat() if prediction.created_at else None,
+        "checked_at": prediction.checked_at.isoformat() if prediction.checked_at else None,
+        "started_at": prediction.started_at.isoformat() if prediction.started_at else None,
+        "finished_at": prediction.finished_at.isoformat() if prediction.finished_at else None,
+        "last_checked_at": prediction.last_checked_at.isoformat() if prediction.last_checked_at else None,
         "result_source": prediction.result_source,
         "last_status_text": prediction.last_status_text,
         "is_live": prediction.is_live,
@@ -155,9 +155,16 @@ def dashboard_summary(
         or 0
     )
 
+    live_filter = and_(
+        Prediction.is_live.is_(True),
+        Prediction.status == "pending",
+        Prediction.started_at.is_not(None),
+        Prediction.finished_at.is_(None),
+    )
+
     live_predictions = (
         db.query(func.count(Prediction.id))
-        .filter(Prediction.is_live.is_(True))
+        .filter(live_filter)
         .scalar()
         or 0
     )
@@ -225,10 +232,10 @@ def dashboard_summary(
     today_live_predictions = (
         db.query(func.count(Prediction.id))
         .filter(
-            Prediction.is_live.is_(True),
-            Prediction.last_checked_at.is_not(None),
-            Prediction.last_checked_at >= start_utc,
-            Prediction.last_checked_at < end_utc,
+            live_filter,
+            Prediction.started_at.is_not(None),
+            Prediction.started_at >= start_utc,
+            Prediction.started_at < end_utc,
         )
         .scalar()
         or 0
