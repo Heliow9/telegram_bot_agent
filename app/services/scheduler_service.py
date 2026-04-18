@@ -708,6 +708,10 @@ def start_scheduler():
 
     scheduler.start()
     scheduler_started = True
+
+    # catch-up dos resumos perdidos após deploy/restart tardio
+    run_missed_summaries_on_startup()
+
     print("[SCHEDULER] Iniciado com sucesso.")
     print("[SCHEDULER] Aguardando primeiro ciclo automático dos jobs...")
 

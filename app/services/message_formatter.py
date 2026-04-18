@@ -25,7 +25,6 @@ def _safe_text(value) -> str:
 def _escape_markdown(text: str) -> str:
     text = _safe_text(text)
 
-    # seguro tanto para Markdown quanto ajuda bastante no V2
     replacements = [
         ("\\", "\\\\"),
         ("_", "\\_"),
@@ -174,23 +173,16 @@ def _format_value_bet(analysis: dict) -> list[str]:
     if not details:
         return []
 
-    lines = [
+    return [
         "",
         "💰 *Value Bet Detectado*",
         f"• Mercado: *{_md(details.get('label'))}* \\({_md(details.get('market'))}\\)",
+        f"• Odd atual: *{details.get('odds')}*",
+        f"• Odd justa: *{details.get('fair_odds')}*",
+        f"• Prob. modelo: *{details.get('model_prob', 0):.0%}*",
+        f"• Prob. implícita: *{details.get('implied_prob', 0):.0%}*",
+        f"• Edge: *{details.get('edge', 0):.2%}*",
     ]
-
-    if details.get("odds") is not None:
-        lines.append(f"• Odd atual: *{float(details.get('odds')):.2f}*")
-
-    if details.get("fair_odds") is not None:
-        lines.append(f"• Odd justa: *{float(details.get('fair_odds')):.2f}*")
-
-    lines.append(f"• Prob. modelo: *{details.get('model_prob', 0):.0%}*")
-    lines.append(f"• Prob. implícita: *{details.get('implied_prob', 0):.0%}*")
-    lines.append(f"• Edge: *{details.get('edge', 0):.2%}*")
-
-    return lines
 
 
 def _format_clv(item: dict) -> list[str]:
@@ -394,7 +386,7 @@ def format_league_summary(league_name: str, payloads: list[dict]) -> str:
         lines.append(f"⚽ *{_md(home_team)} x {_md(away_team)}*{value_flag}")
         lines.append(f"🕒 {_md(_time_only(fixture['date'], fixture['time']))}")
         lines.append(
-            f"🎯 *{_md(_pick_label(analysis['suggested_pick']))}* | "
+            f"🎯 *{_md(_pick_label(analysis['suggested_pick']))}* \\| "
             f"🔒 *{_md(_confidence_label(analysis['confidence']))}*"
         )
         lines.append(
