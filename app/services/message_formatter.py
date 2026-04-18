@@ -174,16 +174,23 @@ def _format_value_bet(analysis: dict) -> list[str]:
     if not details:
         return []
 
-    return [
+    lines = [
         "",
         "💰 *Value Bet Detectado*",
         f"• Mercado: *{_md(details.get('label'))}* \\({_md(details.get('market'))}\\)",
-        f"• Odd atual: *{details.get('odds')}*",
-        f"• Odd justa: *{details.get('fair_odds')}*",
-        f"• Prob. modelo: *{details.get('model_prob', 0):.0%}*",
-        f"• Prob. implícita: *{details.get('implied_prob', 0):.0%}*",
-        f"• Edge: *{details.get('edge', 0):.2%}*",
     ]
+
+    if details.get("odds") is not None:
+        lines.append(f"• Odd atual: *{float(details.get('odds')):.2f}*")
+
+    if details.get("fair_odds") is not None:
+        lines.append(f"• Odd justa: *{float(details.get('fair_odds')):.2f}*")
+
+    lines.append(f"• Prob. modelo: *{details.get('model_prob', 0):.0%}*")
+    lines.append(f"• Prob. implícita: *{details.get('implied_prob', 0):.0%}*")
+    lines.append(f"• Edge: *{details.get('edge', 0):.2%}*")
+
+    return lines
 
 
 def _format_clv(item: dict) -> list[str]:

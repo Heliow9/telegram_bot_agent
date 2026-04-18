@@ -125,15 +125,20 @@ def save_prediction(payload: dict):
         try:
             _sync_db_to_json()
         except Exception as sync_error:
-            print(f"[PREDICTION_STORE][JSON] Erro ao sincronizar após save_prediction: {sync_error}")
+            print(
+                f"[PREDICTION_STORE][JSON] "
+                f"Erro ao sincronizar após save_prediction: {sync_error}"
+            )
 
 
 def get_prediction_by_fixture_id(fixture_id: str) -> Optional[Dict]:
     db = SessionLocal()
     try:
+        normalized_fixture_id = _normalize_fixture_id(fixture_id)
+
         item = (
             db.query(Prediction)
-            .filter(Prediction.fixture_id == str(fixture_id).strip())
+            .filter(Prediction.fixture_id == normalized_fixture_id)
             .first()
         )
 
@@ -197,7 +202,10 @@ def update_prediction_result(
         try:
             _sync_db_to_json()
         except Exception as sync_error:
-            print(f"[PREDICTION_STORE][JSON] Erro ao sincronizar após update_prediction_result: {sync_error}")
+            print(
+                f"[PREDICTION_STORE][JSON] "
+                f"Erro ao sincronizar após update_prediction_result: {sync_error}"
+            )
 
 
 def update_prediction_market_odds(
@@ -219,7 +227,10 @@ def update_prediction_market_odds(
         try:
             _sync_db_to_json()
         except Exception as sync_error:
-            print(f"[PREDICTION_STORE][JSON] Erro ao sincronizar após update_prediction_market_odds: {sync_error}")
+            print(
+                f"[PREDICTION_STORE][JSON] "
+                f"Erro ao sincronizar após update_prediction_market_odds: {sync_error}"
+            )
 
 
 def update_prediction_live_state(
@@ -244,7 +255,10 @@ def update_prediction_live_state(
         try:
             _sync_db_to_json()
         except Exception as sync_error:
-            print(f"[PREDICTION_STORE][JSON] Erro ao sincronizar após update_prediction_live_state: {sync_error}")
+            print(
+                f"[PREDICTION_STORE][JSON] "
+                f"Erro ao sincronizar após update_prediction_live_state: {sync_error}"
+            )
 
 
 def get_pending_predictions() -> List[Dict]:
@@ -273,7 +287,10 @@ def get_pending_predictions() -> List[Dict]:
                     "model_source": item.model_source,
                     "is_live": item.is_live,
                     "last_status_text": item.last_status_text,
-                    "last_checked_at": item.last_checked_at.isoformat() if item.last_checked_at else None,
+                    "last_checked_at": (
+                        item.last_checked_at.isoformat()
+                        if item.last_checked_at else None
+                    ),
                 }
             )
 

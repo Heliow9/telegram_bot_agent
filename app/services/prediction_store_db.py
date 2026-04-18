@@ -19,6 +19,30 @@ def _pick_market_odds(analysis: dict) -> Optional[float]:
     return None
 
 
+def _pick_fair_odds(analysis: dict) -> Optional[float]:
+    fair_odds = analysis.get("fair_odds") or {}
+    pick = analysis.get("suggested_pick")
+    if not pick:
+        return None
+    return fair_odds.get(pick)
+
+
+def _safe_float(value, default=0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_int(value, default=None):
+    try:
+        if value is None:
+            return default
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def save_prediction_db(payload: dict):
     db = SessionLocal()
     try:
@@ -30,7 +54,12 @@ def save_prediction_db(payload: dict):
         if not fixture_id:
             raise ValueError(f"Payload sem fixture.id válido: {payload}")
 
-        existing = db.query(Prediction).filter(Prediction.fixture_id == fixture_id).first()
+        existing = (
+            db.query(Prediction)
+            .filter(Prediction.fixture_id == fixture_id)
+            .first()
+        )
+
         if existing:
             print(f"[DB] Prediction já existe para fixture_id={fixture_id}")
 
@@ -55,7 +84,34 @@ def save_prediction_db(payload: dict):
                 )
                 db.add(prediction_odds)
                 db.commit()
-                print(f"[DB] Odds vinculadas à prediction existente | fixture_id={fixture_id}")
+                print(
+                    f"[DB] Odds vinculadas à prediction existente | "
+                    f"fixture_id={fixture_id}"
+                )
+
+            elif existing.odds is not None and (odds or fair_odds or value_bet):
+                # Atualiza odds existentes sem apagar estrutura anterior
+                existing.odds.bookmaker = odds.get("bookmaker") or existing.odds.bookmaker
+                existing.odds.home_odds = odds.get("home_odds")
+                existing.odds.draw_odds = odds.get("draw_odds")
+                existing.odds.away_odds = odds.get("away_odds")
+                existing.odds.fair_home_odds = fair_odds.get("1")
+                existing.odds.fair_draw_odds = fair_odds.get("X")
+                existing.odds.fair_away_odds = fair_odds.get("2")
+
+                picked_market_odds = _pick_market_odds(analysis)
+                if existing.odds.opening_market_odds is None and picked_market_odds is not None:
+                    existing.odds.opening_market_odds = picked_market_odds
+                if picked_market_odds is not None:
+                    existing.odds.latest_market_odds = picked_market_odds
+
+                existing.odds.edge = value_bet.get("edge")
+                existing.odds.has_value_bet = bool(value_bet.get("has_value"))
+                db.commit()
+                print(
+                    f"[DB] Odds da prediction existente atualizadas | "
+                    f"fixture_id={fixture_id}"
+                )
 
             return
 
@@ -74,9 +130,9 @@ def save_prediction_db(payload: dict):
             match_date=fixture.get("date"),
             match_time=fixture.get("time"),
             pick=analysis.get("suggested_pick"),
-            prob_home=float(analysis.get("prob_home", 0.0)),
-            prob_draw=float(analysis.get("prob_draw", 0.0)),
-            prob_away=float(analysis.get("prob_away", 0.0)),
+            prob_home=_safe_float(analysis.get("prob_home", 0.0)),
+            prob_draw=_safe_float(analysis.get("prob_draw", 0.0)),
+            prob_away=_safe_float(analysis.get("prob_away", 0.0)),
             confidence=analysis.get("confidence", "baixa"),
             model_source=analysis.get("model_source"),
             status="pending",
@@ -148,7 +204,11 @@ def update_prediction_result_db(
         result = str(result).strip().upper()
         now = datetime.utcnow()
 
-        item = db.query(Prediction).filter(Prediction.fixture_id == fixture_id).first()
+        item = (
+            db.query(Prediction)
+            .filter(Prediction.fixture_id == fixture_id)
+            .first()
+        )
         if not item:
             print(f"[DB] Prediction não encontrada para fixture_id={fixture_id}")
             return
@@ -156,13 +216,13 @@ def update_prediction_result_db(
         previous_status = item.status
 
         item.result = result
-        item.home_score = home_score
-        item.away_score = away_score
+        item.home_score = _safe_int(home_score, item.home_score)
+        item.away_score = _safe_int(away_score, item.away_score)
         item.checked_at = now
         item.last_checked_at = now
         item.last_status_text = status_text
         item.result_source = result_source or "sportsdb"
-        item.is_live = bool(is_live)
+        item.is_live = bool(is_live and not finished)
 
         if item.started_at is None:
             item.started_at = now
@@ -177,8 +237,9 @@ def update_prediction_result_db(
         print(
             f"[DB] Resultado atualizado | fixture_id={fixture_id} | "
             f"pick={item.pick} | result={result} | "
-            f"placar={home_score}x{away_score} | "
-            f"status_anterior={previous_status} | status_novo={item.status}"
+            f"placar={item.home_score}x{item.away_score} | "
+            f"status_anterior={previous_status} | status_novo={item.status} | "
+            f"is_live={item.is_live}"
         )
 
     except Exception as e:
@@ -198,16 +259,25 @@ def update_prediction_market_odds_db(
 
     db = SessionLocal()
     try:
-        item = db.query(Prediction).filter(Prediction.fixture_id == str(fixture_id).strip()).first()
+        item = (
+            db.query(Prediction)
+            .filter(Prediction.fixture_id == str(fixture_id).strip())
+            .first()
+        )
         if not item or not item.odds:
             return
 
-        item.odds.latest_market_odds = float(latest_market_odds)
+        latest_value = _safe_float(latest_market_odds, None)
+        if latest_value is None:
+            return
+
+        item.odds.latest_market_odds = latest_value
         item.last_checked_at = datetime.utcnow()
         db.commit()
 
-    except Exception:
+    except Exception as e:
         db.rollback()
+        print(f"[DB] Erro ao atualizar odds fixture_id={fixture_id}: {e}")
         raise
     finally:
         db.close()
@@ -225,12 +295,18 @@ def update_prediction_live_state_db(
         fixture_id = str(fixture_id).strip()
         now = datetime.utcnow()
 
-        item = db.query(Prediction).filter(Prediction.fixture_id == fixture_id).first()
+        item = (
+            db.query(Prediction)
+            .filter(Prediction.fixture_id == fixture_id)
+            .first()
+        )
         if not item:
             print(f"[DB] Prediction não encontrada para live_state fixture_id={fixture_id}")
             return
 
         current_status = str(item.status or "").strip().lower()
+
+        # Se já resolveu, não mexe em live
         if current_status in {"hit", "miss"}:
             print(
                 f"[DB] Live state ignorado para jogo resolvido | "
@@ -238,8 +314,14 @@ def update_prediction_live_state_db(
             )
             return
 
-        item.home_score = int(home_score) if home_score is not None else item.home_score
-        item.away_score = int(away_score) if away_score is not None else item.away_score
+        if home_score is not None:
+            parsed_home_score = _safe_int(home_score, item.home_score)
+            item.home_score = parsed_home_score
+
+        if away_score is not None:
+            parsed_away_score = _safe_int(away_score, item.away_score)
+            item.away_score = parsed_away_score
+
         item.last_checked_at = now
         item.last_status_text = status_text
         item.is_live = bool(is_live)
@@ -247,12 +329,16 @@ def update_prediction_live_state_db(
         if bool(is_live) and item.started_at is None:
             item.started_at = now
 
+        # Se chegou aqui como não-live e ainda estava marcado live, derruba a flag
+        if not bool(is_live):
+            item.is_live = False
+
         db.commit()
 
         print(
             f"[DB] Live state atualizado | fixture_id={fixture_id} | "
             f"placar={item.home_score}x{item.away_score} | "
-            f"status_text={status_text} | is_live={is_live}"
+            f"status_text={status_text} | is_live={item.is_live}"
         )
 
     except Exception as e:
@@ -266,7 +352,11 @@ def update_prediction_live_state_db(
 def get_prediction_db_by_fixture_id(fixture_id: str) -> Optional[Dict]:
     db = SessionLocal()
     try:
-        item = db.query(Prediction).filter(Prediction.fixture_id == str(fixture_id).strip()).first()
+        item = (
+            db.query(Prediction)
+            .filter(Prediction.fixture_id == str(fixture_id).strip())
+            .first()
+        )
         if not item:
             return None
 

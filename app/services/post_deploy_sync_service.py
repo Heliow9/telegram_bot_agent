@@ -13,6 +13,7 @@ from app.services.message_formatter import format_prediction_message
 from app.services.scheduler_service import (
     _already_sent_alert,
     _save_sent_alert,
+    build_alert_key,
 )
 
 
@@ -63,11 +64,17 @@ class PostDeploySyncService:
         normalized_time = (fixture_time or "00:00:00").strip()
         normalized_time = normalized_time.replace("Z", "")
 
+        if "T" in normalized_time:
+            normalized_time = normalized_time.split("T", 1)[-1]
+
         if "+" in normalized_time:
             normalized_time = normalized_time.split("+", 1)[0]
 
         if normalized_time.count(":") == 1:
             normalized_time = f"{normalized_time}:00"
+
+        if not normalized_time:
+            normalized_time = "00:00:00"
 
         raw_value = f"{fixture_date} {normalized_time}"
 
@@ -77,6 +84,12 @@ class PostDeploySyncService:
             except ValueError:
                 continue
 
+        print(
+            f"[POST_DEPLOY_SYNC] Falha ao parsear datetime | "
+            f"fixture_id={self._fixture_id(payload)} | "
+            f"raw_date={fixture_date} | raw_time={fixture_time} | "
+            f"normalized_time={normalized_time}"
+        )
         return None
 
     def _minutes_to_kickoff(self, payload: Dict) -> Optional[int]:
@@ -229,10 +242,18 @@ class PostDeploySyncService:
                 continue
 
             startup_alert_key = self._build_startup_alert_key(fixture_id)
+            regular_alert_key = build_alert_key(fixture_id)
 
             if _already_sent_alert(startup_alert_key):
                 print(
                     f"[POST_DEPLOY_SYNC] Alerta startup já existia, não reenviado | "
+                    f"fixture_id={fixture_id} | jogo={home_team} x {away_team}"
+                )
+                continue
+
+            if _already_sent_alert(regular_alert_key):
+                print(
+                    f"[POST_DEPLOY_SYNC] Alerta normal de 30min já havia sido enviado | "
                     f"fixture_id={fixture_id} | jogo={home_team} x {away_team}"
                 )
                 continue

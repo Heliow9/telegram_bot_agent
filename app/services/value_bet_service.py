@@ -18,6 +18,18 @@ class ValueBetService:
             return 0.0
         return 1.0 / odds
 
+    @staticmethod
+    def prob_to_fair_odds(prob: Optional[float]) -> Optional[float]:
+        try:
+            prob_value = float(prob or 0.0)
+        except (TypeError, ValueError):
+            return None
+
+        if prob_value <= 0:
+            return None
+
+        return round(1.0 / prob_value, 2)
+
     def evaluate(self, probs: Dict[str, float], odds: Optional[Dict]) -> Dict:
         result = {
             "has_value": False,
@@ -55,11 +67,14 @@ class ValueBetService:
 
         for market, data in markets.items():
             market_odds = data["odds"]
+            model_prob = data["model_prob"]
+
             if not market_odds:
                 continue
 
             implied = self.decimal_to_implied_prob(market_odds)
-            edge = data["model_prob"] - implied
+            edge = model_prob - implied
+            fair_odds = self.prob_to_fair_odds(model_prob)
 
             if edge > best_edge:
                 best_edge = edge
@@ -67,9 +82,10 @@ class ValueBetService:
                 best_details = {
                     "market": market,
                     "label": data["label"],
-                    "model_prob": round(data["model_prob"], 4),
+                    "model_prob": round(model_prob, 4),
                     "implied_prob": round(implied, 4),
                     "odds": round(float(market_odds), 2),
+                    "fair_odds": fair_odds,
                     "edge": round(edge, 4),
                     "required_edge": round(threshold, 4),
                 }

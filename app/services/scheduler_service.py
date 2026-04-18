@@ -102,6 +102,41 @@ def _already_sent_alert(alert_key: str) -> bool:
     return alert_key in _load_sent_alerts()
 
 
+def _cleanup_old_alert_keys():
+    alerts = _load_sent_alerts()
+    if not alerts:
+        return 0
+
+    today_prefix = now_local().strftime("%Y-%m-%d")
+    filtered = []
+
+    for key in alerts:
+        text = str(key or "").strip()
+
+        # mantém chaves sem data explícita para não correr risco de quebrar compatibilidade
+        if not text:
+            continue
+
+        if today_prefix in text:
+            filtered.append(text)
+            continue
+
+        # mantém resultados/alertas recentes baseados em fixture se não houver data embutida
+        if "_" in text and today_prefix not in text:
+            # removemos chaves antigas simples para evitar bloqueio eterno de alerta
+            continue
+
+        filtered.append(text)
+
+    removed = max(0, len(alerts) - len(filtered))
+
+    if removed > 0:
+        _save_json_list(ALERT_STORE_PATH, filtered)
+        print(f"[SCHEDULER] Limpeza de sent_alerts concluída | removidos={removed}")
+
+    return removed
+
+
 def _load_sent_results():
     return _load_json_list(RESULT_STORE_PATH)
 
@@ -533,6 +568,10 @@ def start_scheduler():
     if scheduler_started:
         print("[SCHEDULER] Já iniciado, ignorando nova inicialização.")
         return
+
+    removed_alerts = _cleanup_old_alert_keys()
+    if removed_alerts:
+        print(f"[SCHEDULER] Chaves antigas de alerta removidas no startup: {removed_alerts}")
 
     runtime = _runtime_config()
     live_enabled = bool(
