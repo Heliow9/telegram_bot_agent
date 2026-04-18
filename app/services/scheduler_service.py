@@ -593,7 +593,7 @@ def start_scheduler():
         replace_existing=True,
         max_instances=1,
         coalesce=True,
-        misfire_grace_time=120,
+        misfire_grace_time=2400,
     )
 
     scheduler.add_job(
