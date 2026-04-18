@@ -113,7 +113,6 @@ def _cleanup_old_alert_keys():
     for key in alerts:
         text = str(key or "").strip()
 
-        # mantém chaves sem data explícita para não correr risco de quebrar compatibilidade
         if not text:
             continue
 
@@ -121,9 +120,7 @@ def _cleanup_old_alert_keys():
             filtered.append(text)
             continue
 
-        # mantém resultados/alertas recentes baseados em fixture se não houver data embutida
         if "_" in text and today_prefix not in text:
-            # removemos chaves antigas simples para evitar bloqueio eterno de alerta
             continue
 
         filtered.append(text)
@@ -315,6 +312,49 @@ def job_send_afternoon_summary():
     except Exception as e:
         print(f"[SCHEDULER] Erro ao enviar resumo da tarde/noite: {e}")
         _job_log_end("job_send_afternoon_summary", started, success=False, payloads=total_payloads)
+
+
+def run_missed_summaries_on_startup():
+    """
+    Garante envio dos resumos se a instância subir depois do horário programado.
+    """
+    started = _job_log_start("run_missed_summaries_on_startup")
+
+    try:
+        now = now_local()
+        current_hhmm = now.strftime("%H:%M")
+        today_str = now.strftime("%Y-%m-%d")
+
+        morning_key = f"{today_str}_morning"
+        afternoon_key = f"{today_str}_afternoon"
+
+        ran_morning = False
+        ran_afternoon = False
+
+        if current_hhmm >= "08:00" and not _already_sent_summary(morning_key):
+            print(
+                f"[SCHEDULER] Catch-up do resumo da manhã acionado no startup | now={now}"
+            )
+            job_send_morning_summary()
+            ran_morning = True
+
+        if current_hhmm >= "12:30" and not _already_sent_summary(afternoon_key):
+            print(
+                f"[SCHEDULER] Catch-up do resumo da tarde/noite acionado no startup | now={now}"
+            )
+            job_send_afternoon_summary()
+            ran_afternoon = True
+
+        _job_log_end(
+            "run_missed_summaries_on_startup",
+            started,
+            success=True,
+            ran_morning=ran_morning,
+            ran_afternoon=ran_afternoon,
+        )
+    except Exception as e:
+        print(f"[SCHEDULER] Erro no catch-up de resumos no startup: {e}")
+        _job_log_end("run_missed_summaries_on_startup", started, success=False)
 
 
 def _refresh_clv_for_pending_predictions():
@@ -605,7 +645,7 @@ def start_scheduler():
         replace_existing=True,
         max_instances=1,
         coalesce=True,
-        misfire_grace_time=120,
+        misfire_grace_time=2400,
     )
 
     scheduler.add_job(

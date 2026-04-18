@@ -15,7 +15,10 @@ from app.routers.auth import router as auth_router
 from app.routers.dashboard import router as dashboard_router
 from app.routers.settings import router as settings_router
 from app.routers.admin import router as admin_router
-from app.services.scheduler_service import start_scheduler
+from app.services.scheduler_service import (
+    start_scheduler,
+    run_missed_summaries_on_startup,
+)
 from app.services.post_deploy_sync_service import PostDeploySyncService
 
 logging.basicConfig(
@@ -26,6 +29,7 @@ logger = logging.getLogger(__name__)
 
 _scheduler_started = False
 _post_deploy_sync_ran = False
+_startup_summary_recovery_ran = False
 
 
 def reset_training_artifacts() -> None:
@@ -82,10 +86,27 @@ def safe_run_post_deploy_sync() -> None:
         logger.exception("❌ Erro na sincronização pós-deploy: %s", e)
 
 
+def safe_run_startup_summary_recovery() -> None:
+    global _startup_summary_recovery_ran
+
+    if _startup_summary_recovery_ran:
+        logger.info("⏭️ Recuperação de resumos já executada nesta instância. Ignorando.")
+        return
+
+    try:
+        logger.info("📨 Verificando resumos perdidos por horário de deploy...")
+        run_missed_summaries_on_startup()
+        _startup_summary_recovery_ran = True
+        logger.info("✅ Recuperação de resumos concluída")
+    except Exception as e:
+        logger.exception("❌ Erro na recuperação de resumos: %s", e)
+
+
 def start_background_jobs() -> None:
     def run():
         safe_run_post_deploy_sync()
         safe_start_scheduler()
+        safe_run_startup_summary_recovery()
 
     thread = threading.Thread(
         target=run,
@@ -104,8 +125,7 @@ async def lifespan(app: FastAPI):
 
     # limpa dataset/modelo local ao subir
 
-
-    # mantém scheduler e pós-deploy fora da thread principal da API
+    # mantém scheduler e rotinas de recovery fora da thread principal da API
     start_background_jobs()
 
     yield
@@ -169,6 +189,7 @@ def root():
         "status": "running",
         "scheduler_started": _scheduler_started,
         "post_deploy_sync_ran": _post_deploy_sync_ran,
+        "startup_summary_recovery_ran": _startup_summary_recovery_ran,
     }
 
 
@@ -180,6 +201,7 @@ def health():
         "env": settings.app_env,
         "scheduler_started": _scheduler_started,
         "post_deploy_sync_ran": _post_deploy_sync_ran,
+        "startup_summary_recovery_ran": _startup_summary_recovery_ran,
     }
 
 
