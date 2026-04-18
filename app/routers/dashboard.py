@@ -415,11 +415,25 @@ def market_overview(
         movement_direction = "stable"
 
         if opening is not None and latest is not None:
-            movement = round(float(latest) - float(opening), 2)
-            if movement < 0:
-                movement_direction = "down"
-            elif movement > 0:
-                movement_direction = "up"
+            try:
+                movement = round(float(latest) - float(opening), 2)
+                if movement < 0:
+                    movement_direction = "down"
+                elif movement > 0:
+                    movement_direction = "up"
+            except (TypeError, ValueError):
+                movement = None
+                movement_direction = "stable"
+
+        # status pronto para o front
+        if prediction.is_live:
+            market_status = "live"
+        elif prediction.status in ["hit", "miss"]:
+            market_status = "resolved"
+        elif prediction.status == "pending":
+            market_status = "pending"
+        else:
+            market_status = "unknown"
 
         items.append(
             {
@@ -428,11 +442,21 @@ def market_overview(
                 "league_name": prediction.league_name,
                 "home_team": prediction.home_team,
                 "away_team": prediction.away_team,
+                "match_date": prediction.match_date.isoformat() if prediction.match_date else None,
+                "match_time": prediction.match_time,
                 "pick": prediction.pick,
+
+                # status bruto do sistema
                 "status": prediction.status,
                 "result": prediction.result,
                 "home_score": prediction.home_score,
                 "away_score": prediction.away_score,
+
+                # status pronto para a tela de mercado
+                "market_status": market_status,
+                "is_live": prediction.is_live,
+                "is_resolved": prediction.status in ["hit", "miss"],
+
                 "bookmaker": odds.bookmaker,
                 "opening_market_odds": odds.opening_market_odds,
                 "latest_market_odds": odds.latest_market_odds,
@@ -443,6 +467,7 @@ def market_overview(
                 "has_value_bet": odds.has_value_bet,
                 "movement": movement,
                 "movement_direction": movement_direction,
+
                 "created_at": prediction.created_at.isoformat() if prediction.created_at else None,
                 "checked_at": prediction.checked_at.isoformat() if prediction.checked_at else None,
                 "started_at": prediction.started_at.isoformat() if prediction.started_at else None,
@@ -450,7 +475,6 @@ def market_overview(
                 "last_checked_at": prediction.last_checked_at.isoformat() if prediction.last_checked_at else None,
                 "result_source": prediction.result_source,
                 "last_status_text": prediction.last_status_text,
-                "is_live": prediction.is_live,
             }
         )
 
