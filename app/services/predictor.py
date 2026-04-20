@@ -158,6 +158,103 @@ def _combine_forms(general_form: Dict, venue_form: Dict) -> Dict:
     }
 
 
+def _normalize_probabilities(prob_home: float, prob_draw: float, prob_away: float):
+    total = prob_home + prob_draw + prob_away
+    if total <= 0:
+        return 0.3333, 0.3333, 0.3334
+
+    return (
+        prob_home / total,
+        prob_draw / total,
+        prob_away / total,
+    )
+
+
+def _build_double_chance(prob_home: float, prob_draw: float, prob_away: float) -> Dict[str, float]:
+    dc_1x = prob_home + prob_draw
+    dc_x2 = prob_draw + prob_away
+    dc_12 = prob_home + prob_away
+
+    return {
+        "1X": dc_1x,
+        "X2": dc_x2,
+        "12": dc_12,
+    }
+
+
+def _pick_best_main_market(prob_home: float, prob_draw: float, prob_away: float):
+    options = {
+        "1": prob_home,
+        "X": prob_draw,
+        "2": prob_away,
+    }
+    pick = max(options, key=options.get)
+    return pick, options[pick], options
+
+
+def _pick_best_double_chance(prob_home: float, prob_draw: float, prob_away: float):
+    options = _build_double_chance(prob_home, prob_draw, prob_away)
+    pick = max(options, key=options.get)
+    return pick, options[pick], options
+
+
+def _decide_best_market(
+    prob_home: float,
+    prob_draw: float,
+    prob_away: float,
+    confidence: str,
+):
+    main_pick, main_prob, main_options = _pick_best_main_market(
+        prob_home, prob_draw, prob_away
+    )
+    dc_pick, dc_prob, dc_options = _pick_best_double_chance(
+        prob_home, prob_draw, prob_away
+    )
+
+    # Regras para começar:
+    # - se o 1x2 estiver forte, mantém 1x2
+    # - se o jogo estiver equilibrado, permite dupla hipótese
+    # - se o empate estiver muito presente, favorece 1X ou X2
+    draw_prob = prob_draw
+    strength_gap = abs(prob_home - prob_away)
+
+    preferred_market_type = "1x2"
+    suggested_pick = main_pick
+    best_probability = main_prob
+
+    if main_prob < 0.50 and dc_prob >= 0.72:
+        preferred_market_type = "double_chance"
+        suggested_pick = dc_pick
+        best_probability = dc_prob
+
+    if draw_prob >= 0.30 and dc_prob >= 0.70:
+        preferred_market_type = "double_chance"
+        suggested_pick = dc_pick
+        best_probability = dc_prob
+
+    if strength_gap <= 0.10 and dc_prob >= 0.68:
+        preferred_market_type = "double_chance"
+        suggested_pick = dc_pick
+        best_probability = dc_prob
+
+    if confidence == "alta" and main_prob >= 0.54:
+        preferred_market_type = "1x2"
+        suggested_pick = main_pick
+        best_probability = main_prob
+
+    return {
+        "market_type": preferred_market_type,
+        "suggested_pick": suggested_pick,
+        "best_probability": best_probability,
+        "main_market_pick": main_pick,
+        "main_market_probability": main_prob,
+        "double_chance_pick": dc_pick,
+        "double_chance_probability": dc_prob,
+        "main_market_probs": main_options,
+        "double_chance_probs": dc_options,
+    }
+
+
 def calculate_prediction(
     home_team: str,
     away_team: str,
@@ -250,18 +347,17 @@ def calculate_prediction(
 
     prob_draw += draw_boost
 
-    total = prob_home + prob_draw + prob_away
-    prob_home /= total
-    prob_draw /= total
-    prob_away /= total
+    prob_home, prob_draw, prob_away = _normalize_probabilities(
+        prob_home,
+        prob_draw,
+        prob_away,
+    )
 
-    options = {
-        "1": prob_home,
-        "X": prob_draw,
-        "2": prob_away,
-    }
-    suggested_pick = max(options, key=options.get)
-    best_probability = options[suggested_pick]
+    main_pick, main_best_probability, main_options = _pick_best_main_market(
+        prob_home,
+        prob_draw,
+        prob_away,
+    )
 
     min_sample = min(
         _safe_int(home_general_form.get("sample_size", 0)),
@@ -270,9 +366,9 @@ def calculate_prediction(
 
     confidence_score = 0
 
-    if best_probability >= 0.60:
+    if main_best_probability >= 0.60:
         confidence_score += 2
-    elif best_probability >= 0.53:
+    elif main_best_probability >= 0.53:
         confidence_score += 1
 
     if min_sample >= 7:
@@ -290,8 +386,15 @@ def calculate_prediction(
     else:
         confidence = "baixa"
 
+    market_decision = _decide_best_market(
+        prob_home=prob_home,
+        prob_draw=prob_draw,
+        prob_away=prob_away,
+        confidence=confidence,
+    )
+
     score_for_ranking = (
-        best_probability * 100
+        market_decision["best_probability"] * 100
         + (8 if confidence == "alta" else 4 if confidence == "média" else 0)
         - league_priority
     )
@@ -299,13 +402,30 @@ def calculate_prediction(
     return {
         "home_team": home_team,
         "away_team": away_team,
+
+        # probabilidades 1x2
         "prob_home": prob_home,
         "prob_draw": prob_draw,
         "prob_away": prob_away,
-        "suggested_pick": suggested_pick,
+
+        # probabilidades dupla hipótese
+        "prob_1x": round(prob_home + prob_draw, 4),
+        "prob_x2": round(prob_draw + prob_away, 4),
+        "prob_12": round(prob_home + prob_away, 4),
+
+        # decisão principal
+        "market_type": market_decision["market_type"],
+        "suggested_pick": market_decision["suggested_pick"],
         "confidence": confidence,
-        "best_probability": best_probability,
+        "best_probability": market_decision["best_probability"],
         "ranking_score": round(score_for_ranking, 2),
+
+        # apoio para auditoria
+        "main_market_pick": market_decision["main_market_pick"],
+        "main_market_probability": market_decision["main_market_probability"],
+        "double_chance_pick": market_decision["double_chance_pick"],
+        "double_chance_probability": market_decision["double_chance_probability"],
+
         "home_rank": home_rank,
         "away_rank": away_rank,
         "home_form": home_form,
@@ -314,13 +434,25 @@ def calculate_prediction(
         "away_general_form": away_general_form,
         "home_home_form": home_home_form,
         "away_away_form": away_away_form,
+
         "debug": {
             "diff": round(diff, 4),
             "min_sample": min_sample,
             "confidence_score": confidence_score,
             "draw_boost": round(draw_boost, 4),
-            "best_probability": round(best_probability, 4),
+            "best_probability": round(market_decision["best_probability"], 4),
             "home_strength": round(home_strength, 4),
             "away_strength": round(away_strength, 4),
+            "market_type": market_decision["market_type"],
+            "main_market_probs": {
+                "1": round(main_options["1"], 4),
+                "X": round(main_options["X"], 4),
+                "2": round(main_options["2"], 4),
+            },
+            "double_chance_probs": {
+                "1X": round(prob_home + prob_draw, 4),
+                "X2": round(prob_draw + prob_away, 4),
+                "12": round(prob_home + prob_away, 4),
+            },
         },
     }

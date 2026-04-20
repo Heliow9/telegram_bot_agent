@@ -24,14 +24,20 @@ class MLTrainingService:
     RANDOM_STATE = 42
 
     def _build_model(self) -> Pipeline:
-        return Pipeline([
-            ("imputer", SimpleImputer(strategy="constant", fill_value=0)),
-            ("clf", LogisticRegression(
-                solver="lbfgs",
-                max_iter=1000,
-                class_weight="balanced",
-            )),
-        ])
+        return Pipeline(
+            [
+                ("imputer", SimpleImputer(strategy="constant", fill_value=0)),
+                (
+                    "clf",
+                    LogisticRegression(
+                        solver="lbfgs",
+                        max_iter=1500,
+                        class_weight="balanced",
+                        multi_class="auto",
+                    ),
+                ),
+            ]
+        )
 
     def _can_use_stratify(self, y: pd.Series) -> bool:
         counts = y.value_counts()
@@ -39,12 +45,73 @@ class MLTrainingService:
             return False
         return counts.min() >= 2
 
+    def _normalize_dataset(self, df: pd.DataFrame) -> pd.DataFrame:
+        df = df.copy()
+
+        if "target" not in df.columns:
+            return df
+
+        df["target"] = df["target"].astype(str).str.strip().str.upper()
+
+        # compatibilidade com futuros mercados
+        # se no futuro existir market_type e market_target, o treino ainda funciona
+        if "market_type" not in df.columns:
+            df["market_type"] = "1x2"
+
+        df["market_type"] = (
+            df["market_type"]
+            .astype(str)
+            .str.strip()
+            .str.lower()
+            .replace("", "1x2")
+        )
+
+        # por enquanto este trainer continua treinando apenas 1x2
+        df = df[df["market_type"] == "1x2"].copy()
+
+        valid_targets = {"1", "X", "2"}
+        df = df[df["target"].isin(valid_targets)].copy()
+
+        return df
+
+    def _drop_non_feature_columns(self, df: pd.DataFrame) -> pd.DataFrame:
+        drop_cols = [
+            "target",
+            "market_target",
+            "market_type",
+            "league",
+            "fixture_id",
+            "home_team",
+            "away_team",
+            "home_score",
+            "away_score",
+            "created_at",
+            "checked_at",
+            "started_at",
+            "finished_at",
+            "last_checked_at",
+            "result_source",
+            "last_status_text",
+            "pick",
+            "result",
+            "status",
+        ]
+
+        return df.drop(
+            columns=[col for col in drop_cols if col in df.columns],
+            errors="ignore",
+        )
+
     def train(self):
         if not TRAINING_DATA_PATH.exists():
             print("[ML TRAIN] Dataset não encontrado.")
             return
 
-        df = pd.read_csv(TRAINING_DATA_PATH)
+        try:
+            df = pd.read_csv(TRAINING_DATA_PATH)
+        except Exception as e:
+            print(f"[ML TRAIN] Erro ao ler dataset: {e}")
+            return
 
         if df.empty:
             print("[ML TRAIN] Dataset vazio.")
@@ -54,17 +121,13 @@ class MLTrainingService:
             print("[ML TRAIN] Coluna target não encontrada.")
             return
 
-        drop_cols = [
-            "target",
-            "league",
-            "fixture_id",
-            "home_team",
-            "away_team",
-            "home_score",
-            "away_score",
-        ]
+        df = self._normalize_dataset(df)
 
-        X = df.drop(columns=[c for c in drop_cols if c in df.columns], errors="ignore")
+        if df.empty:
+            print("[ML TRAIN] Dataset sem linhas válidas após normalização.")
+            return
+
+        X = self._drop_non_feature_columns(df)
         y = df["target"].astype(str)
 
         if X.empty:
@@ -83,7 +146,7 @@ class MLTrainingService:
             print("[ML TRAIN] É necessário ter pelo menos 2 classes no dataset.")
             return
 
-        print(f"[ML TRAIN] Linhas totais: {len(df)}")
+        print(f"[ML TRAIN] Linhas totais válidas: {len(df)}")
         print(f"[ML TRAIN] Classes: {class_counts}")
         print(f"[ML TRAIN] Features usadas: {list(X.columns)}")
 
@@ -110,7 +173,9 @@ class MLTrainingService:
         test_class_counts = y_test.value_counts().to_dict()
 
         if len(set(y_train.unique())) < 2:
-            print("[ML TRAIN] Treino cancelado: conjunto de treino ficou com menos de 2 classes.")
+            print(
+                "[ML TRAIN] Treino cancelado: conjunto de treino ficou com menos de 2 classes."
+            )
             return
 
         model = self._build_model()
@@ -123,11 +188,13 @@ class MLTrainingService:
 
         try:
             ll = log_loss(y_test, y_prob, labels=list(model.classes_))
-        except Exception:
+        except Exception as e:
+            print(f"[ML TRAIN] Não foi possível calcular log_loss: {e}")
             ll = None
 
         metadata = {
             "trained_at": now_local().isoformat(),
+            "market_type": "1x2",
             "rows": int(len(df)),
             "train_rows": int(len(X_train)),
             "test_rows": int(len(X_test)),

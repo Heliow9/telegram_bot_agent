@@ -14,6 +14,7 @@ class MLModelService:
         self.classes_: Optional[List[str]] = None
         self.features_: Optional[List[str]] = None
         self.metadata: Dict[str, Any] = {}
+        self.market_type: str = "1x2"
         self._load()
 
     def _load(self):
@@ -28,13 +29,15 @@ class MLModelService:
             self.classes_ = payload.get("classes")
             self.features_ = payload.get("features")
             self.metadata = payload.get("metadata") or {}
+            self.market_type = str(self.metadata.get("market_type") or "1x2").strip().lower()
 
-            if not self.model or not self.classes_:
+            if self.model is None or not self.classes_:
                 print("[ML] Payload do modelo inválido.")
                 self.model = None
                 self.classes_ = None
                 self.features_ = None
                 self.metadata = {}
+                self.market_type = "1x2"
                 return
 
             if not self.features_:
@@ -42,7 +45,9 @@ class MLModelService:
                 self.features_ = None
 
             print("[ML] Modelo 1x2 carregado com sucesso.")
+            print(f"[ML] Market type: {self.market_type}")
             print(f"[ML] Classes: {self.classes_}")
+
             if self.features_:
                 print(f"[ML] Total de features: {len(self.features_)}")
 
@@ -60,6 +65,7 @@ class MLModelService:
             self.classes_ = None
             self.features_ = None
             self.metadata = {}
+            self.market_type = "1x2"
 
     def is_available(self) -> bool:
         return self.model is not None and self.classes_ is not None
@@ -67,12 +73,42 @@ class MLModelService:
     def get_metadata(self) -> Dict[str, Any]:
         return self.metadata or {}
 
+    def get_market_type(self) -> str:
+        return self.market_type or "1x2"
+
+    def _sanitize_features(self, features: Dict) -> Dict:
+        if not isinstance(features, dict):
+            return {}
+
+        sanitized = {}
+
+        for key, value in features.items():
+            if value is None:
+                sanitized[key] = 0
+                continue
+
+            if isinstance(value, bool):
+                sanitized[key] = int(value)
+                continue
+
+            if isinstance(value, (int, float)):
+                sanitized[key] = value
+                continue
+
+            try:
+                sanitized[key] = float(value)
+            except (TypeError, ValueError):
+                sanitized[key] = 0
+
+        return sanitized
+
     def _build_aligned_dataframe(self, features: Dict) -> pd.DataFrame:
-        raw_df = pd.DataFrame([features or {}])
+        safe_features = self._sanitize_features(features)
+        raw_df = pd.DataFrame([safe_features])
 
         if self.features_:
             aligned = raw_df.reindex(columns=self.features_, fill_value=0)
-            return aligned
+            return aligned.fillna(0)
 
         return raw_df.fillna(0)
 
@@ -107,3 +143,22 @@ class MLModelService:
         except Exception as e:
             print(f"[ML] Erro ao prever probabilidades: {e}")
             return None
+
+    def predict_label(self, features: Dict) -> Optional[str]:
+        probabilities = self.predict_proba(features)
+        if not probabilities:
+            return None
+
+        return max(probabilities, key=probabilities.get)
+
+    def explain_prediction(self, features: Dict) -> Dict[str, Any]:
+        probabilities = self.predict_proba(features)
+
+        return {
+            "available": self.is_available(),
+            "market_type": self.get_market_type(),
+            "classes": self.classes_ or [],
+            "features_used": self.features_ or [],
+            "probabilities": probabilities,
+            "predicted_label": max(probabilities, key=probabilities.get) if probabilities else None,
+        }

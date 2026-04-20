@@ -17,6 +17,9 @@ class OddsService:
         self.markets = settings.odds_markets
         self.odds_format = settings.odds_format
 
+    # ---------------------------------------------------------------------
+    # CONFIG
+    # ---------------------------------------------------------------------
     def _load_api_keys(self) -> List[str]:
         runtime = load_runtime_config()
         raw_keys = runtime.get("odds_api_keys", [])
@@ -92,19 +95,22 @@ class OddsService:
             "liga dos campeoes": "soccer_uefa_champs_league",
             "championship": "soccer_efl_champ",
             "bundesliga": "soccer_germany_bundesliga",
-
             "liga europa": "soccer_uefa_europa_league",
             "uefa europa league": "soccer_uefa_europa_league",
             "europa league": "soccer_uefa_europa_league",
-
             "libertadores": "soccer_conmebol_copa_libertadores",
             "copa libertadores": "soccer_conmebol_copa_libertadores",
             "conmebol copa libertadores": "soccer_conmebol_copa_libertadores",
-
             "copa sul americana": "soccer_conmebol_copa_sudamericana",
             "copa sudamericana": "soccer_conmebol_copa_sudamericana",
             "sudamericana": "soccer_conmebol_copa_sudamericana",
             "conmebol copa sudamericana": "soccer_conmebol_copa_sudamericana",
+            "la liga": "soccer_spain_la_liga",
+            "laliga": "soccer_spain_la_liga",
+            "liga portugal": "soccer_portugal_primeira_liga",
+            "primeira liga": "soccer_portugal_primeira_liga",
+            "ligue 1": "soccer_france_ligue_one",
+            "eredivisie": "soccer_netherlands_eredivisie",
         }
 
         return mapping.get(normalized)
@@ -143,6 +149,10 @@ class OddsService:
             "universidad central": ["universidad central"],
             "fluminense": ["fluminense"],
             "independiente rivadavia": ["independiente rivadavia"],
+            "psg": ["paris saint germain", "psg"],
+            "manchester united": ["manchester united", "man utd"],
+            "manchester city": ["manchester city", "man city"],
+            "internazionale": ["inter", "inter milan", "internazionale"],
         }
 
         if normalized in custom_aliases:
@@ -210,51 +220,8 @@ class OddsService:
             return True
 
     # ---------------------------------------------------------------------
-    # EXTRAÇÃO DE ODDS
+    # REQUEST
     # ---------------------------------------------------------------------
-    def _extract_h2h_odds(
-        self,
-        game: Dict[str, Any],
-        home_team: str,
-        away_team: str,
-    ) -> Optional[Dict[str, Any]]:
-        bookmakers: List[Dict[str, Any]] = game.get("bookmakers", [])
-        if not bookmakers:
-            return None
-
-        for bookmaker in bookmakers:
-            for market in bookmaker.get("markets", []):
-                if market.get("key") != "h2h":
-                    continue
-
-                home_odds = None
-                draw_odds = None
-                away_odds = None
-
-                for outcome in market.get("outcomes", []):
-                    name = outcome.get("name", "")
-                    price = outcome.get("price")
-
-                    if price is None:
-                        continue
-
-                    if self._team_names_match(name, home_team):
-                        home_odds = float(price)
-                    elif self._team_names_match(name, away_team):
-                        away_odds = float(price)
-                    elif self._normalize_text(name) == "draw":
-                        draw_odds = float(price)
-
-                if home_odds is not None and away_odds is not None:
-                    return {
-                        "home_odds": home_odds,
-                        "draw_odds": draw_odds,
-                        "away_odds": away_odds,
-                        "bookmaker": bookmaker.get("title"),
-                    }
-
-        return None
-
     def _request_with_key(
         self,
         api_key: str,
@@ -300,7 +267,95 @@ class OddsService:
             return None, None, str(e)
 
     # ---------------------------------------------------------------------
-    # BUSCA PRINCIPAL
+    # EXTRAÇÃO DE ODDS
+    # ---------------------------------------------------------------------
+    def _extract_1x2_odds(
+        self,
+        game: Dict[str, Any],
+        home_team: str,
+        away_team: str,
+    ) -> Optional[Dict[str, Any]]:
+        bookmakers: List[Dict[str, Any]] = game.get("bookmakers", [])
+        if not bookmakers:
+            return None
+
+        for bookmaker in bookmakers:
+            for market in bookmaker.get("markets", []):
+                if market.get("key") != "h2h":
+                    continue
+
+                home_odds = None
+                draw_odds = None
+                away_odds = None
+
+                for outcome in market.get("outcomes", []):
+                    name = outcome.get("name", "")
+                    price = outcome.get("price")
+
+                    if price is None:
+                        continue
+
+                    if self._team_names_match(name, home_team):
+                        home_odds = float(price)
+                    elif self._team_names_match(name, away_team):
+                        away_odds = float(price)
+                    elif self._normalize_text(name) == "draw":
+                        draw_odds = float(price)
+
+                if home_odds is not None and away_odds is not None:
+                    return {
+                        "bookmaker": bookmaker.get("title"),
+                        "home_odds": home_odds,
+                        "draw_odds": draw_odds,
+                        "away_odds": away_odds,
+                    }
+
+        return None
+
+    def _build_double_chance_odds_from_1x2(
+        self,
+        odds_1x2: Optional[Dict[str, Any]],
+    ) -> Dict[str, Optional[float]]:
+        if not odds_1x2:
+            return {
+                "odds_1x": None,
+                "odds_x2": None,
+                "odds_12": None,
+            }
+
+        home_odds = odds_1x2.get("home_odds")
+        draw_odds = odds_1x2.get("draw_odds")
+        away_odds = odds_1x2.get("away_odds")
+
+        def safe_inverse(value):
+            try:
+                value = float(value)
+                if value <= 0:
+                    return None
+                return 1 / value
+            except Exception:
+                return None
+
+        p1 = safe_inverse(home_odds)
+        px = safe_inverse(draw_odds)
+        p2 = safe_inverse(away_odds)
+
+        def combined_odds(pa, pb):
+            if pa is None or pb is None:
+                return None
+            total = pa + pb
+            if total <= 0:
+                return None
+            return round(1 / total, 4)
+
+        return {
+            "odds_1x": combined_odds(p1, px),
+            "odds_x2": combined_odds(px, p2),
+            "odds_12": combined_odds(p1, p2),
+        }
+
+    # ---------------------------------------------------------------------
+    # PRINCIPAL
     # ---------------------------------------------------------------------
     def get_match_odds(
         self,
@@ -347,14 +402,26 @@ class OddsService:
                     return None
 
                 for game in candidates:
-                    odds = self._extract_h2h_odds(game, home_team, away_team)
-                    if odds:
+                    odds_1x2 = self._extract_1x2_odds(game, home_team, away_team)
+                    if odds_1x2:
+                        dc_odds = self._build_double_chance_odds_from_1x2(odds_1x2)
+
+                        result = {
+                            "bookmaker": odds_1x2.get("bookmaker"),
+                            "home_odds": odds_1x2.get("home_odds"),
+                            "draw_odds": odds_1x2.get("draw_odds"),
+                            "away_odds": odds_1x2.get("away_odds"),
+                            "odds_1x": dc_odds.get("odds_1x"),
+                            "odds_x2": dc_odds.get("odds_x2"),
+                            "odds_12": dc_odds.get("odds_12"),
+                        }
+
                         print(
                             f"[ODDS] Odds encontradas | {league_name} | "
-                            f"{home_team} x {away_team} | bookmaker={odds.get('bookmaker')} | "
+                            f"{home_team} x {away_team} | bookmaker={result.get('bookmaker')} | "
                             f"key #{index} [{masked}]"
                         )
-                        return odds
+                        return result
 
                 print(
                     f"[ODDS] Odds não encontradas nos bookmakers | "
