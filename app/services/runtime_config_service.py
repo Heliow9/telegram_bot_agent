@@ -57,7 +57,7 @@ def _sanitize_runtime_config(data: Dict[str, Any]) -> Dict[str, Any]:
 
     sanitized["odds_api_keys"] = cleaned_keys
     sanitized["telegram_send_to_main_chat"] = bool(sanitized.get("telegram_send_to_main_chat", True))
-    sanitized["telegram_send_to_channel"] = bool(sanitized.get("telegram_send_to_channel", False))
+    sanitized["telegram_send_to_channel"] = bool(sanitized.get("telegram_send_to_channel", True))
 
     return sanitized
 

@@ -22,6 +22,15 @@ def _safe_text(value) -> str:
     return str(value or "").strip()
 
 
+def _safe_float(value, default=None):
+    try:
+        if value is None or value == "":
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def _escape_markdown(text: str) -> str:
     text = _safe_text(text)
 
@@ -77,7 +86,7 @@ def _confidence_label(confidence: str) -> str:
 
 
 def _pick_label(pick: str) -> str:
-    pick = str(pick or "").upper()
+    pick = str(pick or "").upper().strip()
 
     mapping = {
         "1": "Casa",
@@ -101,7 +110,7 @@ def _market_type_label(market_type: str) -> str:
 
 
 def _result_label(real_result: str, home_team: str, away_team: str) -> str:
-    real_result = str(real_result or "").upper()
+    real_result = str(real_result or "").upper().strip()
 
     if real_result == "1":
         return f"{home_team} venceu"
@@ -112,22 +121,57 @@ def _result_label(real_result: str, home_team: str, away_team: str) -> str:
     return str(real_result)
 
 
-def _resolve_market_type(analysis: dict, item: dict | None = None) -> str:
-    market_type = analysis.get("market_type")
+def _resolve_market_type(analysis: dict | None = None, item: dict | None = None) -> str:
+    analysis = analysis or {}
+    item = item or {}
 
-    if not market_type and item:
-        market_type = item.get("market_type")
+    market_type = (
+        analysis.get("market_type")
+        or item.get("market_type")
+    )
 
     return str(market_type or "1x2").lower().strip()
 
 
-def _resolve_final_pick(analysis: dict, item: dict | None = None) -> str:
-    pick = analysis.get("suggested_pick")
+def _resolve_final_pick(analysis: dict | None = None, item: dict | None = None) -> str:
+    analysis = analysis or {}
+    item = item or {}
 
-    if not pick and item:
-        pick = item.get("pick")
+    pick = (
+        analysis.get("suggested_pick")
+        or item.get("pick")
+    )
 
-    return str(pick or "").upper()
+    return str(pick or "").upper().strip()
+
+
+def _resolve_value_bet(analysis: dict | None = None) -> dict:
+    analysis = analysis or {}
+    return analysis.get("value_bet") or {}
+
+
+def _resolve_value_bet_details(analysis: dict | None = None) -> dict:
+    value_bet = _resolve_value_bet(analysis)
+    details = value_bet.get("details") or {}
+
+    if details:
+        return details
+
+    # Compatibilidade com formato novo sem "details"
+    pick = _resolve_final_pick(analysis)
+    market_type = _resolve_market_type(analysis)
+
+    return {
+        "market": pick,
+        "label": value_bet.get("label") or _pick_label(pick),
+        "odds": value_bet.get("market_odds"),
+        "fair_odds": value_bet.get("fair_odds"),
+        "edge": value_bet.get("edge"),
+        "market_type": value_bet.get("market_type") or market_type,
+        "pick": value_bet.get("pick") or pick,
+        "model_prob": analysis.get("best_probability"),
+        "implied_prob": None,
+    }
 
 
 def _get_pick_market_odds(analysis: dict):
@@ -137,19 +181,20 @@ def _get_pick_market_odds(analysis: dict):
 
     if market_type == "double_chance":
         if pick == "1X":
-            return odds.get("odds_1x")
+            return _safe_float(odds.get("odds_1x"))
         if pick == "X2":
-            return odds.get("odds_x2")
+            return _safe_float(odds.get("odds_x2"))
         if pick == "12":
-            return odds.get("odds_12")
+            return _safe_float(odds.get("odds_12"))
         return None
 
     if pick == "1":
-        return odds.get("home_odds")
+        return _safe_float(odds.get("home_odds"))
     if pick == "X":
-        return odds.get("draw_odds")
+        return _safe_float(odds.get("draw_odds"))
     if pick == "2":
-        return odds.get("away_odds")
+        return _safe_float(odds.get("away_odds"))
+
     return None
 
 
@@ -160,41 +205,59 @@ def _get_pick_fair_odds(analysis: dict):
 
     if market_type == "double_chance":
         if pick == "1X":
-            return fair_odds.get("1X") or fair_odds.get("1x")
+            return _safe_float(fair_odds.get("1X") or fair_odds.get("1x"))
         if pick == "X2":
-            return fair_odds.get("X2") or fair_odds.get("x2")
+            return _safe_float(fair_odds.get("X2") or fair_odds.get("x2"))
         if pick == "12":
-            return fair_odds.get("12")
+            return _safe_float(fair_odds.get("12"))
         return None
 
-    return fair_odds.get(pick)
+    return _safe_float(fair_odds.get(pick))
 
 
 def _get_pick_edge(analysis: dict):
-    details = (analysis.get("value_bet") or {}).get("details") or {}
-    pick = _resolve_final_pick(analysis)
+    value_bet = _resolve_value_bet(analysis)
+    details = _resolve_value_bet_details(analysis)
 
-    detail_market = str(details.get("market") or "").upper().replace(" ", "")
-    if detail_market == pick:
-        return details.get("edge")
+    direct_edge = _safe_float(value_bet.get("edge"))
+    if direct_edge is not None:
+        return direct_edge
+
+    details_edge = _safe_float(details.get("edge"))
+    if details_edge is not None:
+        return details_edge
 
     return None
+
+
+def _get_best_probability(analysis: dict):
+    return _safe_float(analysis.get("best_probability"))
+
+
+def _get_main_probabilities_text(analysis: dict) -> str:
+    return (
+        f"{float(analysis.get('prob_home') or 0):.0%} • "
+        f"{float(analysis.get('prob_draw') or 0):.0%} • "
+        f"{float(analysis.get('prob_away') or 0):.0%}"
+    )
+
+
+def _has_double_chance_probabilities(analysis: dict) -> bool:
+    return any(
+        analysis.get(key) is not None
+        for key in ("prob_1x", "prob_x2", "prob_12")
+    )
 
 
 def _format_probabilities(analysis: dict) -> list[str]:
     lines = [
         "*Probabilidades 1X2*",
-        f"• Casa: *{analysis.get('prob_home', 0):.0%}*",
-        f"• Empate: *{analysis.get('prob_draw', 0):.0%}*",
-        f"• Fora: *{analysis.get('prob_away', 0):.0%}*",
+        f"• Casa: *{float(analysis.get('prob_home') or 0):.0%}*",
+        f"• Empate: *{float(analysis.get('prob_draw') or 0):.0%}*",
+        f"• Fora: *{float(analysis.get('prob_away') or 0):.0%}*",
     ]
 
-    has_dc = any(
-        analysis.get(key) is not None
-        for key in ("prob_1x", "prob_x2", "prob_12")
-    )
-
-    if has_dc:
+    if _has_double_chance_probabilities(analysis):
         lines.extend([
             "",
             "*Probabilidades Dupla Hipótese*",
@@ -238,8 +301,8 @@ def _format_odds_comparison(analysis: dict) -> list[str]:
     if not comparison:
         return []
 
-    fair_odds = comparison.get("fair_odds")
-    current_odds = comparison.get("current_odds")
+    fair_odds = _safe_float(comparison.get("fair_odds"))
+    current_odds = _safe_float(comparison.get("current_odds"))
 
     if fair_odds is None or current_odds is None:
         return []
@@ -247,32 +310,46 @@ def _format_odds_comparison(analysis: dict) -> list[str]:
     return [
         "",
         "⚖️ *Comparativo de Odds*",
-        f"• Odd justa do modelo: *{float(fair_odds):.2f}*",
-        f"• Odd atual do mercado: *{float(current_odds):.2f}*",
+        f"• Odd justa do modelo: *{fair_odds:.2f}*",
+        f"• Odd atual do mercado: *{current_odds:.2f}*",
     ]
 
 
 def _format_value_bet(analysis: dict) -> list[str]:
-    value_bet = analysis.get("value_bet") or {}
+    value_bet = _resolve_value_bet(analysis)
     if not value_bet.get("has_value"):
         return []
 
-    details = value_bet.get("details") or {}
+    details = _resolve_value_bet_details(analysis)
     if not details:
         return []
 
-    market = str(details.get("market") or "").upper()
+    market = str(details.get("market") or _resolve_final_pick(analysis)).upper()
+    label = details.get("label") or _pick_label(market)
+    odds = _safe_float(details.get("odds"))
+    fair_odds = _safe_float(details.get("fair_odds"))
+    model_prob = _safe_float(details.get("model_prob"))
+    implied_prob = _safe_float(details.get("implied_prob"))
+    edge = _safe_float(details.get("edge"))
 
-    return [
+    lines = [
         "",
         "💰 *Value Bet Detectado*",
-        f"• Mercado: *{_md(details.get('label') or _pick_label(market))}* \\({_md(market)}\\)",
-        f"• Odd atual: *{float(details.get('odds', 0)):.2f}*",
-        f"• Odd justa: *{float(details.get('fair_odds', 0)):.2f}*",
-        f"• Prob. modelo: *{float(details.get('model_prob', 0)):.0%}*",
-        f"• Prob. implícita: *{float(details.get('implied_prob', 0)):.0%}*",
-        f"• Edge: *{float(details.get('edge', 0)):.2%}*",
+        f"• Mercado: *{_md(label)}* \\({_md(market)}\\)",
     ]
+
+    if odds is not None:
+        lines.append(f"• Odd atual: *{odds:.2f}*")
+    if fair_odds is not None:
+        lines.append(f"• Odd justa: *{fair_odds:.2f}*")
+    if model_prob is not None:
+        lines.append(f"• Prob. modelo: *{model_prob:.0%}*")
+    if implied_prob is not None:
+        lines.append(f"• Prob. implícita: *{implied_prob:.0%}*")
+    if edge is not None:
+        lines.append(f"• Edge: *{edge:.2%}*")
+
+    return lines
 
 
 def _format_clv(item: dict) -> list[str]:
@@ -280,9 +357,9 @@ def _format_clv(item: dict) -> list[str]:
     if not clv:
         return []
 
-    open_odds = clv.get("opening_odds")
-    close_odds = clv.get("closing_odds")
-    movement = clv.get("movement")
+    open_odds = _safe_float(clv.get("opening_odds"))
+    close_odds = _safe_float(clv.get("closing_odds"))
+    movement = _safe_float(clv.get("movement"))
 
     if open_odds is None or close_odds is None:
         return []
@@ -290,19 +367,19 @@ def _format_clv(item: dict) -> list[str]:
     lines = [
         "",
         "📌 *Closing Line Value*",
-        f"• Odd no alerta: *{float(open_odds):.2f}*",
-        f"• Odd mais recente: *{float(close_odds):.2f}*",
+        f"• Odd no alerta: *{open_odds:.2f}*",
+        f"• Odd mais recente: *{close_odds:.2f}*",
     ]
 
     if movement is not None:
-        if float(movement) > 0:
-            lines.append(f"• Movimento: *\\+{float(movement):.2f}*")
+        if movement > 0:
+            lines.append(f"• Movimento: *\\+{movement:.2f}*")
         else:
-            lines.append(f"• Movimento: *{float(movement):.2f}*")
+            lines.append(f"• Movimento: *{movement:.2f}*")
 
-    if float(close_odds) < float(open_odds):
+    if close_odds < open_odds:
         lines.append("• Leitura: *mercado confirmou o lado do bot*")
-    elif float(close_odds) > float(open_odds):
+    elif close_odds > open_odds:
         lines.append("• Leitura: *mercado andou contra o lado do bot*")
     else:
         lines.append("• Leitura: *linha estável*")
@@ -352,9 +429,9 @@ def format_prediction_message(payload: dict) -> str:
         f"🧠 *Modelo:* {_md(str(analysis.get('model_source', 'heuristic')).upper())}",
     ])
 
-    best_probability = analysis.get("best_probability")
+    best_probability = _get_best_probability(analysis)
     if best_probability is not None:
-        lines.append(f"📈 *Probabilidade da entrada:* {float(best_probability):.0%}")
+        lines.append(f"📈 *Probabilidade da entrada:* {best_probability:.0%}")
 
     lines.extend(_format_odds(analysis))
     lines.extend(_format_odds_comparison(analysis))
@@ -397,18 +474,18 @@ def format_best_pick(payload: dict) -> str:
         f"🧠 *Modelo:* {_md(str(analysis.get('model_source', 'heuristic')).upper())}",
     ])
 
-    best_probability = analysis.get("best_probability")
+    best_probability = _get_best_probability(analysis)
     if best_probability is not None:
-        lines.append(f"📈 *Probabilidade da entrada:* {float(best_probability):.0%}")
+        lines.append(f"📈 *Probabilidade da entrada:* {best_probability:.0%}")
 
     if market_odds is not None:
-        lines.append(f"📉 *Odd atual:* {float(market_odds):.2f}")
+        lines.append(f"📉 *Odd atual:* {market_odds:.2f}")
 
     if fair_odds is not None:
-        lines.append(f"⚖️ *Odd justa:* {float(fair_odds):.2f}")
+        lines.append(f"⚖️ *Odd justa:* {fair_odds:.2f}")
 
     if edge is not None:
-        lines.append(f"💰 *Edge:* {float(edge):.2%}")
+        lines.append(f"💰 *Edge:* {edge:.2%}")
 
     if analysis.get("value_bet", {}).get("has_value"):
         lines.append("✅ *Value bet detectado*")
@@ -440,9 +517,13 @@ def format_top_ranking(payloads: list[dict], top_n: int = 5) -> str:
         market_type = _resolve_market_type(analysis)
         market_odds = _get_pick_market_odds(analysis)
         edge = _get_pick_edge(analysis)
+        best_probability = _get_best_probability(analysis)
 
         lines.append(f"{marker} *{_md(home_team)} x {_md(away_team)}*{value_flag}")
-        lines.append(f"{emoji} {_md(league_name)} • {_md(_time_only(fixture['date'], fixture['time']))}")
+        lines.append(
+            f"{emoji} {_md(league_name)} • "
+            f"{_md(_time_only(fixture['date'], fixture['time']))}"
+        )
         lines.append(
             f"Mercado: *{_md(_market_type_label(market_type))}* • "
             f"Palpite: *{_md(_pick_label(final_pick))}* • "
@@ -450,13 +531,12 @@ def format_top_ranking(payloads: list[dict], top_n: int = 5) -> str:
         )
 
         extras = []
-        best_probability = analysis.get("best_probability")
         if best_probability is not None:
-            extras.append(f"Prob: *{float(best_probability):.0%}*")
+            extras.append(f"Prob: *{best_probability:.0%}*")
         if market_odds is not None:
-            extras.append(f"Odd: *{float(market_odds):.2f}*")
+            extras.append(f"Odd: *{market_odds:.2f}*")
         if edge is not None:
-            extras.append(f"Edge: *{float(edge):.2%}*")
+            extras.append(f"Edge: *{edge:.2%}*")
 
         if extras:
             lines.append(" • ".join(extras))
@@ -501,19 +581,21 @@ def format_league_summary(league_name: str, payloads: list[dict]) -> str:
             f"🔒 *{_md(_confidence_label(analysis.get('confidence')))}*"
         )
         lines.append(
-            f"📈 1X2: {analysis.get('prob_home', 0):.0%} • {analysis.get('prob_draw', 0):.0%} • {analysis.get('prob_away', 0):.0%}"
+            f"📈 1X2: {_get_main_probabilities_text(analysis)}"
         )
 
-        if any(analysis.get(key) is not None for key in ("prob_1x", "prob_x2", "prob_12")):
+        if _has_double_chance_probabilities(analysis):
             lines.append(
-                f"🧩 DH: {float(analysis.get('prob_1x') or 0):.0%} • {float(analysis.get('prob_x2') or 0):.0%} • {float(analysis.get('prob_12') or 0):.0%}"
+                f"🧩 DH: {float(analysis.get('prob_1x') or 0):.0%} • "
+                f"{float(analysis.get('prob_x2') or 0):.0%} • "
+                f"{float(analysis.get('prob_12') or 0):.0%}"
             )
 
         extras = []
         if market_odds is not None:
-            extras.append(f"Odd {float(market_odds):.2f}")
+            extras.append(f"Odd {market_odds:.2f}")
         if edge is not None:
-            extras.append(f"Edge {float(edge):.2%}")
+            extras.append(f"Edge {edge:.2%}")
         if extras:
             lines.append(f"💹 {_md(' | '.join(extras))}")
 

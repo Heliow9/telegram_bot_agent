@@ -23,6 +23,11 @@ def _normalize_result(value: Optional[str]) -> str:
     return str(value or "").strip().upper()
 
 
+def _normalize_market_type(value: Optional[str]) -> Optional[str]:
+    text = str(value or "").strip().lower()
+    return text or None
+
+
 def _pick_market_odds(analysis: dict) -> Optional[float]:
     odds = analysis.get("odds") or {}
     pick = _normalize_pick(analysis.get("suggested_pick"))
@@ -76,22 +81,61 @@ def save_prediction_db(payload: dict):
         fixture = payload.get("fixture") or {}
         analysis = payload.get("analysis") or {}
         league = payload.get("league") or {}
+        odds = analysis.get("odds") or {}
+        fair_odds = analysis.get("fair_odds") or {}
+        value_bet = analysis.get("value_bet") or {}
 
         fixture_id = str(fixture.get("id", "")).strip()
         if not fixture_id:
             raise ValueError(f"Payload sem fixture.id válido: {payload}")
 
+        pick = _normalize_pick(analysis.get("suggested_pick"))
+        market_type = _normalize_market_type(analysis.get("market_type"))
+        picked_market_odds = _pick_market_odds(analysis)
+
         existing = db.query(Prediction).filter(Prediction.fixture_id == fixture_id).first()
         if existing:
             print(f"[DB] Prediction já existe para fixture_id={fixture_id}")
 
-            odds = analysis.get("odds") or {}
-            fair_odds = analysis.get("fair_odds") or {}
-            value_bet = analysis.get("value_bet") or {}
+            existing.pick = pick or existing.pick
+            existing.market_type = market_type or existing.market_type
+            existing.main_market_pick = _normalize_pick(
+                analysis.get("main_market_pick")
+                or analysis.get("main_pick")
+                or analysis.get("main_market_selection")
+            ) or existing.main_market_pick
+            existing.double_chance_pick = _normalize_pick(
+                analysis.get("double_chance_pick")
+            ) or existing.double_chance_pick
+
+            existing.prob_home = float(analysis.get("prob_home", existing.prob_home or 0.0))
+            existing.prob_draw = float(analysis.get("prob_draw", existing.prob_draw or 0.0))
+            existing.prob_away = float(analysis.get("prob_away", existing.prob_away or 0.0))
+
+            existing.prob_1x = _safe_float(analysis.get("prob_1x"))
+            existing.prob_x2 = _safe_float(analysis.get("prob_x2"))
+            existing.prob_12 = _safe_float(analysis.get("prob_12"))
+
+            existing.main_market_probability = _safe_float(
+                analysis.get("main_market_probability")
+            )
+            existing.double_chance_probability = _safe_float(
+                analysis.get("double_chance_probability")
+            )
+            existing.best_probability = _safe_float(
+                analysis.get("best_probability")
+            )
+
+            existing.confidence = analysis.get("confidence", existing.confidence or "baixa")
+            existing.model_source = analysis.get("model_source", existing.model_source)
+
+            if analysis.get("features") is not None:
+                existing.features_json = json.dumps(
+                    analysis.get("features"),
+                    ensure_ascii=False,
+                )
 
             if odds or fair_odds or value_bet:
-                picked_market_odds = _pick_market_odds(analysis)
-
                 if existing.odds is None:
                     prediction_odds = PredictionOdds(
                         prediction_id=existing.id,
@@ -102,6 +146,12 @@ def save_prediction_db(payload: dict):
                         fair_home_odds=_safe_float(fair_odds.get("1")),
                         fair_draw_odds=_safe_float(fair_odds.get("X")),
                         fair_away_odds=_safe_float(fair_odds.get("2")),
+                        odds_1x=_safe_float(odds.get("odds_1x")),
+                        odds_x2=_safe_float(odds.get("odds_x2")),
+                        odds_12=_safe_float(odds.get("odds_12")),
+                        fair_odds_1x=_safe_float(fair_odds.get("1X")),
+                        fair_odds_x2=_safe_float(fair_odds.get("X2")),
+                        fair_odds_12=_safe_float(fair_odds.get("12")),
                         opening_market_odds=picked_market_odds,
                         latest_market_odds=picked_market_odds,
                         edge=_safe_float(value_bet.get("edge")),
@@ -113,9 +163,18 @@ def save_prediction_db(payload: dict):
                     existing.odds.home_odds = _safe_float(odds.get("home_odds"))
                     existing.odds.draw_odds = _safe_float(odds.get("draw_odds"))
                     existing.odds.away_odds = _safe_float(odds.get("away_odds"))
+
                     existing.odds.fair_home_odds = _safe_float(fair_odds.get("1"))
                     existing.odds.fair_draw_odds = _safe_float(fair_odds.get("X"))
                     existing.odds.fair_away_odds = _safe_float(fair_odds.get("2"))
+
+                    existing.odds.odds_1x = _safe_float(odds.get("odds_1x"))
+                    existing.odds.odds_x2 = _safe_float(odds.get("odds_x2"))
+                    existing.odds.odds_12 = _safe_float(odds.get("odds_12"))
+
+                    existing.odds.fair_odds_1x = _safe_float(fair_odds.get("1X"))
+                    existing.odds.fair_odds_x2 = _safe_float(fair_odds.get("X2"))
+                    existing.odds.fair_odds_12 = _safe_float(fair_odds.get("12"))
 
                     if existing.odds.opening_market_odds is None:
                         existing.odds.opening_market_odds = picked_market_odds
@@ -124,30 +183,14 @@ def save_prediction_db(payload: dict):
                     existing.odds.edge = _safe_float(value_bet.get("edge"))
                     existing.odds.has_value_bet = bool(value_bet.get("has_value"))
 
-                existing.pick = _normalize_pick(analysis.get("suggested_pick")) or existing.pick
-                existing.prob_home = float(analysis.get("prob_home", existing.prob_home or 0.0))
-                existing.prob_draw = float(analysis.get("prob_draw", existing.prob_draw or 0.0))
-                existing.prob_away = float(analysis.get("prob_away", existing.prob_away or 0.0))
-                existing.confidence = analysis.get("confidence", existing.confidence or "baixa")
-                existing.model_source = analysis.get("model_source", existing.model_source)
-
-                if analysis.get("features") is not None:
-                    existing.features_json = json.dumps(
-                        analysis.get("features"),
-                        ensure_ascii=False,
-                    )
-
-                db.commit()
-                print(f"[DB] Prediction existente atualizada | fixture_id={fixture_id}")
-
+            db.commit()
+            print(f"[DB] Prediction existente atualizada | fixture_id={fixture_id}")
             return
-
-        pick = _normalize_pick(analysis.get("suggested_pick"))
 
         print(
             f"[DB] Salvando prediction | fixture_id={fixture_id} | "
             f"{fixture.get('home_team')} x {fixture.get('away_team')} | "
-            f"pick={pick}"
+            f"pick={pick} | market_type={market_type}"
         )
 
         prediction = Prediction(
@@ -159,9 +202,24 @@ def save_prediction_db(payload: dict):
             match_date=fixture.get("date"),
             match_time=fixture.get("time"),
             pick=pick,
+            market_type=market_type,
+            main_market_pick=_normalize_pick(
+                analysis.get("main_market_pick")
+                or analysis.get("main_pick")
+                or analysis.get("main_market_selection")
+            ) or None,
+            double_chance_pick=_normalize_pick(
+                analysis.get("double_chance_pick")
+            ) or None,
             prob_home=float(analysis.get("prob_home", 0.0)),
             prob_draw=float(analysis.get("prob_draw", 0.0)),
             prob_away=float(analysis.get("prob_away", 0.0)),
+            prob_1x=_safe_float(analysis.get("prob_1x")),
+            prob_x2=_safe_float(analysis.get("prob_x2")),
+            prob_12=_safe_float(analysis.get("prob_12")),
+            main_market_probability=_safe_float(analysis.get("main_market_probability")),
+            double_chance_probability=_safe_float(analysis.get("double_chance_probability")),
+            best_probability=_safe_float(analysis.get("best_probability")),
             confidence=analysis.get("confidence", "baixa"),
             model_source=analysis.get("model_source"),
             status="pending",
@@ -185,10 +243,6 @@ def save_prediction_db(payload: dict):
         db.add(prediction)
         db.flush()
 
-        odds = analysis.get("odds") or {}
-        fair_odds = analysis.get("fair_odds") or {}
-        value_bet = analysis.get("value_bet") or {}
-
         if odds or fair_odds or value_bet:
             prediction_odds = PredictionOdds(
                 prediction_id=prediction.id,
@@ -199,8 +253,14 @@ def save_prediction_db(payload: dict):
                 fair_home_odds=_safe_float(fair_odds.get("1")),
                 fair_draw_odds=_safe_float(fair_odds.get("X")),
                 fair_away_odds=_safe_float(fair_odds.get("2")),
-                opening_market_odds=_pick_market_odds(analysis),
-                latest_market_odds=_pick_market_odds(analysis),
+                odds_1x=_safe_float(odds.get("odds_1x")),
+                odds_x2=_safe_float(odds.get("odds_x2")),
+                odds_12=_safe_float(odds.get("odds_12")),
+                fair_odds_1x=_safe_float(fair_odds.get("1X")),
+                fair_odds_x2=_safe_float(fair_odds.get("X2")),
+                fair_odds_12=_safe_float(fair_odds.get("12")),
+                opening_market_odds=picked_market_odds,
+                latest_market_odds=picked_market_odds,
                 edge=_safe_float(value_bet.get("edge")),
                 has_value_bet=bool(value_bet.get("has_value")),
             )
@@ -404,6 +464,15 @@ def get_prediction_db_by_fixture_id(fixture_id: str) -> Optional[Dict]:
             "home_score": item.home_score,
             "away_score": item.away_score,
             "pick": item.pick,
+            "market_type": item.market_type,
+            "main_market_pick": item.main_market_pick,
+            "double_chance_pick": item.double_chance_pick,
+            "prob_1x": item.prob_1x,
+            "prob_x2": item.prob_x2,
+            "prob_12": item.prob_12,
+            "main_market_probability": item.main_market_probability,
+            "double_chance_probability": item.double_chance_probability,
+            "best_probability": item.best_probability,
             "started_at": item.started_at.isoformat() if item.started_at else None,
             "finished_at": item.finished_at.isoformat() if item.finished_at else None,
             "last_checked_at": item.last_checked_at.isoformat() if item.last_checked_at else None,

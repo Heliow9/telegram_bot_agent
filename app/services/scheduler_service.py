@@ -172,6 +172,41 @@ def build_result_key(fixture_id: str) -> str:
     return f"{fixture_id}_result"
 
 
+def _normalize_market_type(value) -> str:
+    return str(value or "1x2").strip().lower()
+
+
+def _normalize_pick(value) -> str:
+    return str(value or "").strip().upper()
+
+
+def _pick_latest_market_odds_by_market(
+    market_type: str,
+    pick: str,
+    odds: dict,
+):
+    market_type = _normalize_market_type(market_type)
+    pick = _normalize_pick(pick)
+    odds = odds or {}
+
+    if market_type == "double_chance":
+        if pick == "1X":
+            return odds.get("odds_1x")
+        if pick == "X2":
+            return odds.get("odds_x2")
+        if pick == "12":
+            return odds.get("odds_12")
+        return None
+
+    if pick == "1":
+        return odds.get("home_odds")
+    if pick == "X":
+        return odds.get("draw_odds")
+    if pick == "2":
+        return odds.get("away_odds")
+    return None
+
+
 def _persist_payloads(payloads: list[dict], source_label: str):
     saved = 0
 
@@ -371,12 +406,13 @@ def _refresh_clv_for_pending_predictions():
 
     for item in pending:
         try:
-            fixture_id = str(item.get("fixture_id", ""))
+            fixture_id = str(item.get("fixture_id", "")).strip()
             league_name = item.get("league")
             home_team = item.get("home_team")
             away_team = item.get("away_team")
             match_date = item.get("date", "")
-            pick = item.get("pick")
+            pick = _normalize_pick(item.get("pick"))
+            market_type = _normalize_market_type(item.get("market_type"))
 
             if not fixture_id or not league_name or not home_team or not away_team or not pick:
                 continue
@@ -391,13 +427,11 @@ def _refresh_clv_for_pending_predictions():
             if not odds:
                 continue
 
-            latest_market_odds = None
-            if pick == "1":
-                latest_market_odds = odds.get("home_odds")
-            elif pick == "X":
-                latest_market_odds = odds.get("draw_odds")
-            elif pick == "2":
-                latest_market_odds = odds.get("away_odds")
+            latest_market_odds = _pick_latest_market_odds_by_market(
+                market_type=market_type,
+                pick=pick,
+                odds=odds,
+            )
 
             if latest_market_odds is not None:
                 update_prediction_market_odds(fixture_id, latest_market_odds)
@@ -435,7 +469,7 @@ def job_check_games():
     for payload in payloads:
         try:
             fixture = payload["fixture"]
-            fixture_id = str(fixture.get("id", ""))
+            fixture_id = str(fixture.get("id", "")).strip()
             home_team = fixture.get("home_team", "Casa")
             away_team = fixture.get("away_team", "Fora")
 
@@ -504,7 +538,7 @@ def job_check_results():
 
     for item in updates:
         try:
-            fixture_id = str(item.get("fixture_id", ""))
+            fixture_id = str(item.get("fixture_id", "")).strip()
             result_key = build_result_key(fixture_id)
 
             if _already_sent_result(result_key):
@@ -709,7 +743,6 @@ def start_scheduler():
     scheduler.start()
     scheduler_started = True
 
-    # catch-up dos resumos perdidos após deploy/restart tardio
     run_missed_summaries_on_startup()
 
     print("[SCHEDULER] Iniciado com sucesso.")

@@ -70,6 +70,9 @@ def _build_odds_snapshot(odds: Optional[PredictionOdds]) -> Optional[Dict]:
         "home_odds": _safe_float(odds.home_odds),
         "draw_odds": _safe_float(odds.draw_odds),
         "away_odds": _safe_float(odds.away_odds),
+        "odds_1x": _safe_float(odds.odds_1x),
+        "odds_x2": _safe_float(odds.odds_x2),
+        "odds_12": _safe_float(odds.odds_12),
     }
 
 
@@ -81,6 +84,9 @@ def _build_fair_odds_snapshot(odds: Optional[PredictionOdds]) -> Optional[Dict]:
         "1": _safe_float(odds.fair_home_odds),
         "X": _safe_float(odds.fair_draw_odds),
         "2": _safe_float(odds.fair_away_odds),
+        "1X": _safe_float(odds.fair_odds_1x),
+        "X2": _safe_float(odds.fair_odds_x2),
+        "12": _safe_float(odds.fair_odds_12),
     }
 
 
@@ -114,9 +120,18 @@ def _serialize_prediction_row(
         "date": prediction.match_date,
         "time": prediction.match_time,
         "pick": prediction.pick,
+        "market_type": prediction.market_type,
+        "main_market_pick": prediction.main_market_pick,
+        "double_chance_pick": prediction.double_chance_pick,
         "prob_home": round(float(prediction.prob_home or 0.0), 4),
         "prob_draw": round(float(prediction.prob_draw or 0.0), 4),
         "prob_away": round(float(prediction.prob_away or 0.0), 4),
+        "prob_1x": _safe_float(prediction.prob_1x),
+        "prob_x2": _safe_float(prediction.prob_x2),
+        "prob_12": _safe_float(prediction.prob_12),
+        "main_market_probability": _safe_float(prediction.main_market_probability),
+        "double_chance_probability": _safe_float(prediction.double_chance_probability),
+        "best_probability": _safe_float(prediction.best_probability),
         "confidence": prediction.confidence,
         "result": prediction.result,
         "home_score": prediction.home_score,
@@ -312,6 +327,7 @@ def get_pending_predictions() -> List[Dict]:
                     "date": item.match_date,
                     "time": item.match_time,
                     "pick": item.pick,
+                    "market_type": item.market_type,  # ✅ ESSENCIAL
                     "confidence": item.confidence,
                     "status": item.status,
                     "model_source": item.model_source,
@@ -351,6 +367,62 @@ def get_resolved_predictions() -> List[Dict]:
                     "date": item.match_date,
                     "time": item.match_time,
                     "pick": item.pick,
+                    "market_type": item.market_type,  # ✅ NOVO
+                    "confidence": item.confidence,
+                    "status": item.status,
+                    "result": item.result,
+                    "home_score": item.home_score,
+                    "away_score": item.away_score,
+                    "checked_at": item.checked_at.isoformat() if item.checked_at else None,
+                    "started_at": item.started_at.isoformat() if item.started_at else None,
+                    "finished_at": item.finished_at.isoformat() if item.finished_at else None,
+                    "last_checked_at": item.last_checked_at.isoformat() if item.last_checked_at else None,
+                    "result_source": item.result_source,
+                    "last_status_text": item.last_status_text,
+                    "is_live": item.is_live,
+                    "model_source": item.model_source,
+                }
+            )
+
+        return result
+
+    finally:
+        db.close()
+
+
+def get_resolved_predictions() -> List[Dict]:
+    db = SessionLocal()
+    try:
+        items = (
+            db.query(Prediction)
+            .filter(Prediction.status.in_(["hit", "miss"]))
+            .order_by(Prediction.checked_at.desc(), Prediction.created_at.desc())
+            .all()
+        )
+
+        result = []
+        for item in items:
+            result.append(
+                {
+                    "fixture_id": item.fixture_id,
+                    "league": item.league_name,
+                    "home_team": item.home_team,
+                    "away_team": item.away_team,
+                    "date": item.match_date,
+                    "time": item.match_time,
+                    "pick": item.pick,
+                    "market_type": item.market_type,
+                    "main_market_pick": item.main_market_pick,
+                    "double_chance_pick": item.double_chance_pick,
+                    "prob_home": item.prob_home,
+                    "prob_draw": item.prob_draw,
+                    "prob_away": item.prob_away,
+                    "prob_1x": item.prob_1x,
+                    "prob_x2": item.prob_x2,
+                    "prob_12": item.prob_12,
+                    "main_market_probability": item.main_market_probability,
+                    "double_chance_probability": item.double_chance_probability,
+                    "best_probability": item.best_probability,
                     "confidence": item.confidence,
                     "status": item.status,
                     "result": item.result,
