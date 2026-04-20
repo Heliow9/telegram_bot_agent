@@ -70,22 +70,39 @@ def _confidence_label(confidence: str) -> str:
     mapping = {
         "alta": "Alta",
         "média": "Média",
+        "media": "Média",
         "baixa": "Baixa",
     }
     return mapping.get(str(confidence).lower(), str(confidence))
 
 
 def _pick_label(pick: str) -> str:
-    if pick == "1":
-        return "Casa"
-    if pick == "2":
-        return "Fora"
-    if pick == "X":
-        return "Empate"
-    return str(pick)
+    pick = str(pick or "").upper()
+
+    mapping = {
+        "1": "Casa",
+        "X": "Empate",
+        "2": "Fora",
+        "1X": "Casa ou Empate",
+        "X2": "Empate ou Fora",
+        "12": "Casa ou Fora",
+    }
+    return mapping.get(pick, pick)
+
+
+def _market_type_label(market_type: str) -> str:
+    market_type = str(market_type or "").lower().strip()
+
+    mapping = {
+        "1x2": "1X2",
+        "double_chance": "Dupla Hipótese",
+    }
+    return mapping.get(market_type, market_type or "1X2")
 
 
 def _result_label(real_result: str, home_team: str, away_team: str) -> str:
+    real_result = str(real_result or "").upper()
+
     if real_result == "1":
         return f"{home_team} venceu"
     if real_result == "2":
@@ -95,9 +112,37 @@ def _result_label(real_result: str, home_team: str, away_team: str) -> str:
     return str(real_result)
 
 
+def _resolve_market_type(analysis: dict, item: dict | None = None) -> str:
+    market_type = analysis.get("market_type")
+
+    if not market_type and item:
+        market_type = item.get("market_type")
+
+    return str(market_type or "1x2").lower().strip()
+
+
+def _resolve_final_pick(analysis: dict, item: dict | None = None) -> str:
+    pick = analysis.get("suggested_pick")
+
+    if not pick and item:
+        pick = item.get("pick")
+
+    return str(pick or "").upper()
+
+
 def _get_pick_market_odds(analysis: dict):
     odds = analysis.get("odds") or {}
-    pick = analysis.get("suggested_pick")
+    pick = _resolve_final_pick(analysis)
+    market_type = _resolve_market_type(analysis)
+
+    if market_type == "double_chance":
+        if pick == "1X":
+            return odds.get("odds_1x")
+        if pick == "X2":
+            return odds.get("odds_x2")
+        if pick == "12":
+            return odds.get("odds_12")
+        return None
 
     if pick == "1":
         return odds.get("home_odds")
@@ -110,16 +155,55 @@ def _get_pick_market_odds(analysis: dict):
 
 def _get_pick_fair_odds(analysis: dict):
     fair_odds = analysis.get("fair_odds") or {}
-    pick = analysis.get("suggested_pick")
+    pick = _resolve_final_pick(analysis)
+    market_type = _resolve_market_type(analysis)
+
+    if market_type == "double_chance":
+        if pick == "1X":
+            return fair_odds.get("1X") or fair_odds.get("1x")
+        if pick == "X2":
+            return fair_odds.get("X2") or fair_odds.get("x2")
+        if pick == "12":
+            return fair_odds.get("12")
+        return None
+
     return fair_odds.get(pick)
 
 
 def _get_pick_edge(analysis: dict):
     details = (analysis.get("value_bet") or {}).get("details") or {}
-    pick = analysis.get("suggested_pick")
-    if details.get("market") == pick:
+    pick = _resolve_final_pick(analysis)
+
+    detail_market = str(details.get("market") or "").upper().replace(" ", "")
+    if detail_market == pick:
         return details.get("edge")
+
     return None
+
+
+def _format_probabilities(analysis: dict) -> list[str]:
+    lines = [
+        "*Probabilidades 1X2*",
+        f"• Casa: *{analysis.get('prob_home', 0):.0%}*",
+        f"• Empate: *{analysis.get('prob_draw', 0):.0%}*",
+        f"• Fora: *{analysis.get('prob_away', 0):.0%}*",
+    ]
+
+    has_dc = any(
+        analysis.get(key) is not None
+        for key in ("prob_1x", "prob_x2", "prob_12")
+    )
+
+    if has_dc:
+        lines.extend([
+            "",
+            "*Probabilidades Dupla Hipótese*",
+            f"• 1X: *{float(analysis.get('prob_1x') or 0):.0%}*",
+            f"• X2: *{float(analysis.get('prob_x2') or 0):.0%}*",
+            f"• 12: *{float(analysis.get('prob_12') or 0):.0%}*",
+        ])
+
+    return lines
 
 
 def _format_odds(analysis: dict) -> list[str]:
@@ -127,10 +211,7 @@ def _format_odds(analysis: dict) -> list[str]:
     if not odds:
         return []
 
-    lines = [
-        "",
-        "📉 *Odds 1X2*",
-    ]
+    lines = ["", "📉 *Odds de Mercado*"]
 
     if odds.get("home_odds") is not None:
         lines.append(f"• Casa: *{float(odds['home_odds']):.2f}*")
@@ -138,6 +219,13 @@ def _format_odds(analysis: dict) -> list[str]:
         lines.append(f"• Empate: *{float(odds['draw_odds']):.2f}*")
     if odds.get("away_odds") is not None:
         lines.append(f"• Fora: *{float(odds['away_odds']):.2f}*")
+
+    if odds.get("odds_1x") is not None:
+        lines.append(f"• 1X: *{float(odds['odds_1x']):.2f}*")
+    if odds.get("odds_x2") is not None:
+        lines.append(f"• X2: *{float(odds['odds_x2']):.2f}*")
+    if odds.get("odds_12") is not None:
+        lines.append(f"• 12: *{float(odds['odds_12']):.2f}*")
 
     if odds.get("bookmaker"):
         lines.append(f"• Bookmaker: *{_md(odds['bookmaker'])}*")
@@ -173,15 +261,17 @@ def _format_value_bet(analysis: dict) -> list[str]:
     if not details:
         return []
 
+    market = str(details.get("market") or "").upper()
+
     return [
         "",
         "💰 *Value Bet Detectado*",
-        f"• Mercado: *{_md(details.get('label'))}* \\({_md(details.get('market'))}\\)",
-        f"• Odd atual: *{details.get('odds')}*",
-        f"• Odd justa: *{details.get('fair_odds')}*",
-        f"• Prob. modelo: *{details.get('model_prob', 0):.0%}*",
-        f"• Prob. implícita: *{details.get('implied_prob', 0):.0%}*",
-        f"• Edge: *{details.get('edge', 0):.2%}*",
+        f"• Mercado: *{_md(details.get('label') or _pick_label(market))}* \\({_md(market)}\\)",
+        f"• Odd atual: *{float(details.get('odds', 0)):.2f}*",
+        f"• Odd justa: *{float(details.get('fair_odds', 0)):.2f}*",
+        f"• Prob. modelo: *{float(details.get('model_prob', 0)):.0%}*",
+        f"• Prob. implícita: *{float(details.get('implied_prob', 0)):.0%}*",
+        f"• Edge: *{float(details.get('edge', 0)):.2%}*",
     ]
 
 
@@ -205,14 +295,14 @@ def _format_clv(item: dict) -> list[str]:
     ]
 
     if movement is not None:
-        if movement > 0:
+        if float(movement) > 0:
             lines.append(f"• Movimento: *\\+{float(movement):.2f}*")
         else:
             lines.append(f"• Movimento: *{float(movement):.2f}*")
 
-    if close_odds < open_odds:
+    if float(close_odds) < float(open_odds):
         lines.append("• Leitura: *mercado confirmou o lado do bot*")
-    elif close_odds > open_odds:
+    elif float(close_odds) > float(open_odds):
         lines.append("• Leitura: *mercado andou contra o lado do bot*")
     else:
         lines.append("• Leitura: *linha estável*")
@@ -235,6 +325,9 @@ def format_prediction_message(payload: dict) -> str:
     home_team = fixture["home_team"]
     away_team = fixture["away_team"]
 
+    market_type = _resolve_market_type(analysis)
+    final_pick = _resolve_final_pick(analysis)
+
     lines = [
         "📊 *ANÁLISE PRÉ\\-JOGO*",
         "",
@@ -250,16 +343,18 @@ def format_prediction_message(payload: dict) -> str:
         )
         lines.append("")
 
+    lines.extend(_format_probabilities(analysis))
     lines.extend([
-        "*Probabilidades 1X2*",
-        f"• Casa: *{analysis['prob_home']:.0%}*",
-        f"• Empate: *{analysis['prob_draw']:.0%}*",
-        f"• Fora: *{analysis['prob_away']:.0%}*",
         "",
-        f"🎯 *Palpite:* {_md(_pick_label(analysis['suggested_pick']))} \\({_md(analysis['suggested_pick'])}\\)",
-        f"🔒 *Confiança:* {_md(_confidence_label(analysis['confidence']))}",
-        f"🧠 *Modelo:* {_md(analysis.get('model_source', 'heuristic').upper())}",
+        f"🎯 *Mercado escolhido:* {_md(_market_type_label(market_type))}",
+        f"📌 *Palpite:* {_md(_pick_label(final_pick))} \\({_md(final_pick)}\\)",
+        f"🔒 *Confiança:* {_md(_confidence_label(analysis.get('confidence')))}",
+        f"🧠 *Modelo:* {_md(str(analysis.get('model_source', 'heuristic')).upper())}",
     ])
+
+    best_probability = analysis.get("best_probability")
+    if best_probability is not None:
+        lines.append(f"📈 *Probabilidade da entrada:* {float(best_probability):.0%}")
 
     lines.extend(_format_odds(analysis))
     lines.extend(_format_odds_comparison(analysis))
@@ -278,6 +373,8 @@ def format_best_pick(payload: dict) -> str:
     home_team = fixture["home_team"]
     away_team = fixture["away_team"]
 
+    market_type = _resolve_market_type(analysis)
+    final_pick = _resolve_final_pick(analysis)
     market_odds = _get_pick_market_odds(analysis)
     fair_odds = _get_pick_fair_odds(analysis)
     edge = _get_pick_edge(analysis)
@@ -289,15 +386,20 @@ def format_best_pick(payload: dict) -> str:
         f"⚽ *{_md(home_team)} x {_md(away_team)}*",
         f"🕒 {_md(local_time)}",
         "",
-        "*Probabilidades 1X2*",
-        f"• Casa: *{analysis['prob_home']:.0%}*",
-        f"• Empate: *{analysis['prob_draw']:.0%}*",
-        f"• Fora: *{analysis['prob_away']:.0%}*",
-        "",
-        f"🎯 *Entrada sugerida:* {_md(_pick_label(analysis['suggested_pick']))} \\({_md(analysis['suggested_pick'])}\\)",
-        f"🔒 *Confiança:* {_md(_confidence_label(analysis['confidence']))}",
-        f"🧠 *Modelo:* {_md(analysis.get('model_source', 'heuristic').upper())}",
     ]
+
+    lines.extend(_format_probabilities(analysis))
+    lines.extend([
+        "",
+        f"🎯 *Mercado:* {_md(_market_type_label(market_type))}",
+        f"📌 *Entrada sugerida:* {_md(_pick_label(final_pick))} \\({_md(final_pick)}\\)",
+        f"🔒 *Confiança:* {_md(_confidence_label(analysis.get('confidence')))}",
+        f"🧠 *Modelo:* {_md(str(analysis.get('model_source', 'heuristic')).upper())}",
+    ])
+
+    best_probability = analysis.get("best_probability")
+    if best_probability is not None:
+        lines.append(f"📈 *Probabilidade da entrada:* {float(best_probability):.0%}")
 
     if market_odds is not None:
         lines.append(f"📉 *Odd atual:* {float(market_odds):.2f}")
@@ -334,17 +436,23 @@ def format_top_ranking(payloads: list[dict], top_n: int = 5) -> str:
         home_team = fixture["home_team"]
         away_team = fixture["away_team"]
 
+        final_pick = _resolve_final_pick(analysis)
+        market_type = _resolve_market_type(analysis)
         market_odds = _get_pick_market_odds(analysis)
         edge = _get_pick_edge(analysis)
 
         lines.append(f"{marker} *{_md(home_team)} x {_md(away_team)}*{value_flag}")
         lines.append(f"{emoji} {_md(league_name)} • {_md(_time_only(fixture['date'], fixture['time']))}")
         lines.append(
-            f"Palpite: *{_md(_pick_label(analysis['suggested_pick']))}* • "
-            f"Confiança: *{_md(_confidence_label(analysis['confidence']))}*"
+            f"Mercado: *{_md(_market_type_label(market_type))}* • "
+            f"Palpite: *{_md(_pick_label(final_pick))}* • "
+            f"Confiança: *{_md(_confidence_label(analysis.get('confidence')))}*"
         )
 
         extras = []
+        best_probability = analysis.get("best_probability")
+        if best_probability is not None:
+            extras.append(f"Prob: *{float(best_probability):.0%}*")
         if market_odds is not None:
             extras.append(f"Odd: *{float(market_odds):.2f}*")
         if edge is not None:
@@ -380,18 +488,26 @@ def format_league_summary(league_name: str, payloads: list[dict]) -> str:
         home_team = fixture["home_team"]
         away_team = fixture["away_team"]
 
+        final_pick = _resolve_final_pick(analysis)
+        market_type = _resolve_market_type(analysis)
         market_odds = _get_pick_market_odds(analysis)
         edge = _get_pick_edge(analysis)
 
         lines.append(f"⚽ *{_md(home_team)} x {_md(away_team)}*{value_flag}")
         lines.append(f"🕒 {_md(_time_only(fixture['date'], fixture['time']))}")
         lines.append(
-            f"🎯 *{_md(_pick_label(analysis['suggested_pick']))}* \\| "
-            f"🔒 *{_md(_confidence_label(analysis['confidence']))}*"
+            f"🎯 *{_md(_pick_label(final_pick))}* \\| "
+            f"📦 *{_md(_market_type_label(market_type))}* \\| "
+            f"🔒 *{_md(_confidence_label(analysis.get('confidence')))}*"
         )
         lines.append(
-            f"📈 {analysis['prob_home']:.0%} • {analysis['prob_draw']:.0%} • {analysis['prob_away']:.0%}"
+            f"📈 1X2: {analysis.get('prob_home', 0):.0%} • {analysis.get('prob_draw', 0):.0%} • {analysis.get('prob_away', 0):.0%}"
         )
+
+        if any(analysis.get(key) is not None for key in ("prob_1x", "prob_x2", "prob_12")):
+            lines.append(
+                f"🧩 DH: {float(analysis.get('prob_1x') or 0):.0%} • {float(analysis.get('prob_x2') or 0):.0%} • {float(analysis.get('prob_12') or 0):.0%}"
+            )
 
         extras = []
         if market_odds is not None:
@@ -418,10 +534,11 @@ def format_result_message(item: dict, ai_summary: str | None = None) -> str:
     league = item.get("league", "Jogo")
     home_team = item.get("home_team", "Casa")
     away_team = item.get("away_team", "Fora")
-    pick = item.get("pick", "-")
-    real_result = item.get("real_result", "-")
+    pick = str(item.get("pick", "-")).upper()
+    real_result = str(item.get("real_result", "-")).upper()
     home_score = item.get("home_score", "-")
     away_score = item.get("away_score", "-")
+    market_type = str(item.get("market_type") or "1x2")
 
     lines = [
         f"{status_emoji} *{status_label}*",
@@ -431,6 +548,7 @@ def format_result_message(item: dict, ai_summary: str | None = None) -> str:
         f"📊 *Placar final:* {_md(home_score)} x {_md(away_score)}",
         f"🏁 *Resultado:* {_md(_result_label(real_result, home_team, away_team))}",
         "",
+        f"📦 *Mercado enviado:* {_md(_market_type_label(market_type))}",
         f"📌 *Palpite enviado:* {_md(_pick_label(pick))} \\({_md(pick)}\\)",
         f"🎯 *Resultado real:* {_md(real_result)}",
         f"🔒 *Confiança do modelo:* {_md(_confidence_label(confidence))}",
