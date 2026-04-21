@@ -4,7 +4,7 @@ LEAGUES = [
         "name": "Brazilian Serie A",
         "display_name": "Brasileirão Série A",
         "id": "4351",
-        "season": "2025",
+        "season": "2026",
         "priority": 1,
     },
     {
@@ -12,7 +12,7 @@ LEAGUES = [
         "name": "Brazilian Serie B",
         "display_name": "Brasileirão Série B",
         "id": "4404",
-        "season": "2025",
+        "season": "2026",
         "priority": 2,
     },
     {
