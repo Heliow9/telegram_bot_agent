@@ -243,6 +243,7 @@ def _send_ranked_summary(payloads: list[dict], period_label: str):
     desired_order = [
         "Brasileirão Série A",
         "Brasileirão Série B",
+        "Copa do Brasil",
         "Premier League",
         "LaLiga",
         "Championship",

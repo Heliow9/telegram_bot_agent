@@ -5,6 +5,7 @@ from app.services.time_utils import format_local_datetime
 LEAGUE_EMOJIS = {
     "Brasileirão Série A": "🇧🇷",
     "Brasileirão Série B": "🇧🇷",
+    "Copa do Brasil": "🇧🇷",
     "Premier League": "🏴",
     "LaLiga": "🇪🇸",
     "Liga Europa": "🇪🇺",

@@ -16,6 +16,14 @@ LEAGUES = [
         "priority": 2,
     },
     {
+    "key": "cdb",
+    "name": "Brazil Copa do Brasil",
+    "display_name": "Copa do Brasil",
+    "id": "4356",
+    "season": "2026",
+    "priority": 1,
+    },
+    {
         "key": "pl",
         "name": "English Premier League",
         "display_name": "Premier League",
