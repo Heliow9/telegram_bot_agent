@@ -42,6 +42,7 @@ ml_training_service = MLTrainingService()
 odds_service = OddsService()
 
 scheduler_started = False
+training_job_running = False
 
 ALERT_STORE_PATH = Path("data/sent_alerts.json")
 RESULT_STORE_PATH = Path("data/sent_results.json")
@@ -600,21 +601,91 @@ def job_monitor_live_matches():
         _job_log_end("job_monitor_live_matches", started, success=False)
 
 
-def job_daily_training():
-    started = _job_log_start("job_daily_training")
+def execute_training_job(trigger: str = "manual"):
+    global training_job_running
 
-    print(f"[TRAINING] Rodando treino diário: {now_local()}")
+    started = _job_log_start(f"training_job:{trigger}")
+
+    if training_job_running:
+        message = "Já existe um treino em andamento."
+        print(f"[TRAINING] {message}")
+        _job_log_end(
+            f"training_job:{trigger}",
+            started,
+            success=False,
+            skipped=True,
+            reason="already_running",
+        )
+        return {
+            "success": False,
+            "skipped": True,
+            "message": message,
+            "trigger": trigger,
+        }
+
+    training_job_running = True
 
     try:
+        print(f"[TRAINING] Rodando treino ({trigger}): {now_local()}")
+
         added = training_dataset_service.append_resolved_predictions_to_dataset()
         print(f"[TRAINING] Dataset atualizado | novas linhas líquidas={added}")
 
-        ml_training_service.train()
-        print("[TRAINING] Treino diário concluído com sucesso.")
-        _job_log_end("job_daily_training", started, success=True, added=added)
+        train_result = ml_training_service.train()
+
+        result = {
+            "success": True,
+            "skipped": False,
+            "trigger": trigger,
+            "added": added,
+            "train_result": train_result,
+            "message": "Treino executado com sucesso.",
+            "executed_at": now_local().isoformat(),
+        }
+
+        print(f"[TRAINING] Treino ({trigger}) concluído com sucesso.")
+        _job_log_end(
+            f"training_job:{trigger}",
+            started,
+            success=True,
+            added=added,
+        )
+        return result
+
     except Exception as e:
-        print(f"[TRAINING] Erro no treino diário: {e}")
-        _job_log_end("job_daily_training", started, success=False)
+        print(f"[TRAINING] Erro no treino ({trigger}): {e}")
+        _job_log_end(
+            f"training_job:{trigger}",
+            started,
+            success=False,
+            error=str(e),
+        )
+        return {
+            "success": False,
+            "skipped": False,
+            "trigger": trigger,
+            "message": f"Erro ao executar treino: {e}",
+            "error": str(e),
+            "executed_at": now_local().isoformat(),
+        }
+
+    finally:
+        training_job_running = False
+
+
+def run_manual_training_job():
+    return execute_training_job(trigger="manual")
+
+
+def job_daily_training():
+    result = execute_training_job(trigger="scheduled")
+
+    if result.get("success"):
+        print("[TRAINING] Treino diário concluído com sucesso.")
+    elif result.get("skipped"):
+        print(f"[TRAINING] Treino diário ignorado: {result.get('message')}")
+    else:
+        print(f"[TRAINING] Erro no treino diário: {result.get('message')}")
 
 
 def run_today_audit():
