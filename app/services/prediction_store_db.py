@@ -28,9 +28,24 @@ def _normalize_market_type(value: Optional[str]) -> Optional[str]:
     return text or None
 
 
-def _pick_market_odds(analysis: dict) -> Optional[float]:
+def _resolve_pick(analysis: dict, market_type: Optional[str]) -> str:
+    suggested_pick = _normalize_pick(analysis.get("suggested_pick"))
+    main_market_pick = _normalize_pick(
+        analysis.get("main_market_pick")
+        or analysis.get("main_pick")
+        or analysis.get("main_market_selection")
+    )
+    double_chance_pick = _normalize_pick(analysis.get("double_chance_pick"))
+
+    if market_type == "double_chance":
+        return double_chance_pick or suggested_pick
+
+    return main_market_pick or suggested_pick
+
+
+def _pick_market_odds(analysis: dict, market_type: Optional[str]) -> Optional[float]:
     odds = analysis.get("odds") or {}
-    pick = _normalize_pick(analysis.get("suggested_pick"))
+    pick = _resolve_pick(analysis, market_type)
 
     if pick == "1":
         return _safe_float(odds.get("home_odds"))
@@ -89,9 +104,9 @@ def save_prediction_db(payload: dict):
         if not fixture_id:
             raise ValueError(f"Payload sem fixture.id válido: {payload}")
 
-        pick = _normalize_pick(analysis.get("suggested_pick"))
         market_type = _normalize_market_type(analysis.get("market_type"))
-        picked_market_odds = _pick_market_odds(analysis)
+        pick = _resolve_pick(analysis, market_type)
+        picked_market_odds = _pick_market_odds(analysis, market_type)
 
         existing = db.query(Prediction).filter(Prediction.fixture_id == fixture_id).first()
         if existing:

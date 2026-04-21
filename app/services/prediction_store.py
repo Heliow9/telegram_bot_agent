@@ -327,7 +327,7 @@ def get_pending_predictions() -> List[Dict]:
                     "date": item.match_date,
                     "time": item.match_time,
                     "pick": item.pick,
-                    "market_type": item.market_type,  # ✅ ESSENCIAL
+                    "market_type": item.market_type,
                     "confidence": item.confidence,
                     "status": item.status,
                     "model_source": item.model_source,
@@ -337,50 +337,6 @@ def get_pending_predictions() -> List[Dict]:
                         item.last_checked_at.isoformat()
                         if item.last_checked_at else None
                     ),
-                }
-            )
-
-        return result
-
-    finally:
-        db.close()
-
-
-def get_resolved_predictions() -> List[Dict]:
-    db = SessionLocal()
-    try:
-        items = (
-            db.query(Prediction)
-            .filter(Prediction.status.in_(["hit", "miss"]))
-            .order_by(Prediction.checked_at.desc(), Prediction.created_at.desc())
-            .all()
-        )
-
-        result = []
-        for item in items:
-            result.append(
-                {
-                    "fixture_id": item.fixture_id,
-                    "league": item.league_name,
-                    "home_team": item.home_team,
-                    "away_team": item.away_team,
-                    "date": item.match_date,
-                    "time": item.match_time,
-                    "pick": item.pick,
-                    "market_type": item.market_type,  # ✅ NOVO
-                    "confidence": item.confidence,
-                    "status": item.status,
-                    "result": item.result,
-                    "home_score": item.home_score,
-                    "away_score": item.away_score,
-                    "checked_at": item.checked_at.isoformat() if item.checked_at else None,
-                    "started_at": item.started_at.isoformat() if item.started_at else None,
-                    "finished_at": item.finished_at.isoformat() if item.finished_at else None,
-                    "last_checked_at": item.last_checked_at.isoformat() if item.last_checked_at else None,
-                    "result_source": item.result_source,
-                    "last_status_text": item.last_status_text,
-                    "is_live": item.is_live,
-                    "model_source": item.model_source,
                 }
             )
 
