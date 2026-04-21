@@ -244,6 +244,7 @@ def _send_ranked_summary(payloads: list[dict], period_label: str):
         "Brasileirão Série A",
         "Brasileirão Série B",
         "Premier League",
+        "LaLiga",
         "Championship",
         "Liga dos Campeões",
         "Liga Europa",
@@ -290,7 +291,7 @@ def job_send_morning_summary():
     if not payloads:
         result = telegram.send_message(
             "📭 *Nenhum jogo encontrado pela manhã hoje.*\n\n"
-            "Ligas monitoradas: Brasileirão A, Brasileirão B, Premier League, Championship, "
+            "Ligas monitoradas: Brasileirão A, Brasileirão B, Premier League, LaLiga, Championship, "
             "Liga dos Campeões, Liga Europa, Bundesliga, Argentina Liga Profesional, Itália Série A, "
             "Turquia Super Lig, Libertadores e Copa Sul-Americana."
         )

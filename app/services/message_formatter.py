@@ -6,6 +6,7 @@ LEAGUE_EMOJIS = {
     "Brasileirão Série A": "🇧🇷",
     "Brasileirão Série B": "🇧🇷",
     "Premier League": "🏴",
+    "LaLiga": "🇪🇸",
     "Liga Europa": "🇪🇺",
     "Argentina Liga Profesional": "🇦🇷",
     "Itália Série A": "🇮🇹",
