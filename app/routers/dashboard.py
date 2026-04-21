@@ -418,48 +418,116 @@ def market_overview(
         opening = odds.opening_market_odds
         latest = odds.latest_market_odds
 
+        # =========================
+        # MOVEMENT
+        # =========================
         movement = None
         movement_direction = "stable"
 
-        if opening is not None and latest is not None:
-            movement = round(float(latest) - float(opening), 2)
-            if movement < 0:
-                movement_direction = "down"
-            elif movement > 0:
-                movement_direction = "up"
+        try:
+            if opening is not None and latest is not None:
+                opening = float(opening)
+                latest = float(latest)
 
+                movement = round(latest - opening, 2)
+
+                if movement > 0:
+                    movement_direction = "up"
+                elif movement < 0:
+                    movement_direction = "down"
+        except Exception:
+            movement = None
+            movement_direction = "stable"
+
+        # =========================
+        # FAIR ODDS (baseado no pick)
+        # =========================
+        fair_odds = None
+
+        try:
+            pick = (prediction.pick or "").upper()
+
+            if pick == "1":
+                fair_odds = odds.fair_home_odds
+            elif pick == "X":
+                fair_odds = odds.fair_draw_odds
+            elif pick == "2":
+                fair_odds = odds.fair_away_odds
+        except Exception:
+            fair_odds = None
+
+        # =========================
+        # MARKET TYPE (futuro-ready)
+        # =========================
+        market_type = getattr(prediction, "market_type", None) or "1x2"
+
+        # =========================
+        # STATUS NORMALIZATION
+        # =========================
+        status = (prediction.status or "").lower()
+
+        if status not in ["pending", "hit", "miss"]:
+            status = "pending"
+
+        # =========================
+        # ITEM FINAL
+        # =========================
         items.append(
             {
                 "prediction_id": prediction.id,
                 "fixture_id": prediction.fixture_id,
+
                 "league_name": prediction.league_name,
                 "home_team": prediction.home_team,
                 "away_team": prediction.away_team,
+
                 "match_date": prediction.match_date,
                 "match_time": prediction.match_time,
+
                 "pick": prediction.pick,
-                "status": prediction.status,
+                "market_type": market_type,
+
+                "status": status,
                 "result": prediction.result,
+
                 "home_score": prediction.home_score,
                 "away_score": prediction.away_score,
+
+                "confidence": prediction.confidence,
+
+                # =========================
+                # ODDS
+                # =========================
                 "bookmaker": odds.bookmaker,
                 "opening_market_odds": odds.opening_market_odds,
                 "latest_market_odds": odds.latest_market_odds,
-                "fair_home_odds": odds.fair_home_odds,
-                "fair_draw_odds": odds.fair_draw_odds,
-                "fair_away_odds": odds.fair_away_odds,
+
+                "fair_odds": fair_odds,
                 "edge": odds.edge,
                 "has_value_bet": odds.has_value_bet,
+
+                # =========================
+                # MOVEMENT
+                # =========================
                 "movement": movement,
                 "movement_direction": movement_direction,
+
+                # =========================
+                # STATUS AUX
+                # =========================
+                "is_live": prediction.is_live,
+
+                # =========================
+                # TIMESTAMPS
+                # =========================
                 "created_at": prediction.created_at.isoformat() if prediction.created_at else None,
                 "checked_at": prediction.checked_at.isoformat() if prediction.checked_at else None,
                 "started_at": prediction.started_at.isoformat() if prediction.started_at else None,
                 "finished_at": prediction.finished_at.isoformat() if prediction.finished_at else None,
                 "last_checked_at": prediction.last_checked_at.isoformat() if prediction.last_checked_at else None,
+
                 "result_source": prediction.result_source,
                 "last_status_text": prediction.last_status_text,
-                "is_live": prediction.is_live,
             }
         )
 
