@@ -19,7 +19,7 @@ LEAGUES = [
     "key": "cdb",
     "name": "Brazil Copa do Brasil",
     "display_name": "Copa do Brasil",
-    "id": "4356",
+    "id": "4725",
     "season": "2026",
     "priority": 1,
     },
