@@ -33,7 +33,6 @@ class MLTrainingService:
                         solver="lbfgs",
                         max_iter=1500,
                         class_weight="balanced",
-                        multi_class="auto",
                     ),
                 ),
             ]
