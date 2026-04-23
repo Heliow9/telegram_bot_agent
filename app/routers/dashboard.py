@@ -54,6 +54,62 @@ def _calculate_profit(status: str, opening_odds):
     return None
 
 
+def _estimate_effective_ml_weight(metadata: dict) -> float:
+    """
+    Estima o peso efetivo do ML com base na saúde do treino.
+    A ideia é não supervalorizar um modelo com pouca base ou baixa accuracy.
+    """
+    if not metadata:
+        return 0.0
+
+    try:
+        rows = int(metadata.get("rows") or 0)
+    except (TypeError, ValueError):
+        rows = 0
+
+    try:
+        accuracy = float(metadata.get("accuracy")) if metadata.get("accuracy") is not None else 0.0
+    except (TypeError, ValueError):
+        accuracy = 0.0
+
+    try:
+        log_loss = (
+            float(metadata.get("log_loss"))
+            if metadata.get("log_loss") is not None
+            else None
+        )
+    except (TypeError, ValueError):
+        log_loss = None
+
+    weight = 0.0
+
+    if rows >= 30:
+        weight = 0.10
+    if rows >= 60:
+        weight = 0.18
+    if rows >= 100:
+        weight = 0.25
+    if rows >= 200:
+        weight = 0.35
+    if rows >= 400:
+        weight = 0.45
+
+    if accuracy >= 0.38:
+        weight += 0.05
+    if accuracy >= 0.42:
+        weight += 0.05
+    if accuracy >= 0.48:
+        weight += 0.05
+
+    if log_loss is not None:
+        if log_loss <= 1.20:
+            weight += 0.03
+        if log_loss <= 1.05:
+            weight += 0.03
+
+    return round(min(max(weight, 0.0), 0.65), 4)
+
+
 def _serialize_prediction(prediction: Prediction):
     return {
         "id": prediction.id,
@@ -100,9 +156,14 @@ def _build_model_status():
     tuning_service = PerformanceTuningService()
     metadata = ml_model.get_metadata() if hasattr(ml_model, "get_metadata") else {}
 
-    model_loaded = ml_model.is_available()
     features = getattr(ml_model, "features_", None) or []
     classes = getattr(ml_model, "classes_", None) or []
+
+    model_loaded = False
+    try:
+        model_loaded = bool(ml_model.is_available())
+    except Exception:
+        model_loaded = False
 
     last_training_at = None
     if MODEL_PATH.exists():
@@ -431,9 +492,6 @@ def market_overview(
         opening = odds.opening_market_odds
         latest = odds.latest_market_odds
 
-        # =========================
-        # MOVEMENT
-        # =========================
         movement = None
         movement_direction = "stable"
 
@@ -452,9 +510,6 @@ def market_overview(
             movement = None
             movement_direction = "stable"
 
-        # =========================
-        # FAIR ODDS (baseado no pick)
-        # =========================
         fair_odds = None
 
         try:
@@ -475,52 +530,31 @@ def market_overview(
         except Exception:
             fair_odds = None
 
-        # =========================
-        # MARKET TYPE (futuro-ready)
-        # =========================
         market_type = getattr(prediction, "market_type", None) or "1x2"
 
-        # =========================
-        # STATUS NORMALIZATION
-        # =========================
         status = (prediction.status or "").lower()
-
         if status not in ["pending", "hit", "miss"]:
             status = "pending"
 
-        # =========================
-        # ITEM FINAL
-        # =========================
         items.append(
             {
                 "prediction_id": prediction.id,
                 "fixture_id": prediction.fixture_id,
-
                 "league_name": prediction.league_name,
                 "home_team": prediction.home_team,
                 "away_team": prediction.away_team,
-
                 "match_date": prediction.match_date,
                 "match_time": prediction.match_time,
-
                 "pick": prediction.pick,
                 "market_type": market_type,
-
                 "status": status,
                 "result": prediction.result,
-
                 "home_score": prediction.home_score,
                 "away_score": prediction.away_score,
-
                 "confidence": prediction.confidence,
-
-                # =========================
-                # ODDS
-                # =========================
                 "bookmaker": odds.bookmaker,
                 "opening_market_odds": odds.opening_market_odds,
                 "latest_market_odds": odds.latest_market_odds,
-
                 "fair_odds": fair_odds,
                 "edge": odds.edge,
                 "has_value_bet": odds.has_value_bet,
@@ -536,27 +570,14 @@ def market_overview(
                 "fair_odds_1x": odds.fair_odds_1x,
                 "fair_odds_x2": odds.fair_odds_x2,
                 "fair_odds_12": odds.fair_odds_12,
-
-                # =========================
-                # MOVEMENT
-                # =========================
                 "movement": movement,
                 "movement_direction": movement_direction,
-
-                # =========================
-                # STATUS AUX
-                # =========================
                 "is_live": prediction.is_live,
-
-                # =========================
-                # TIMESTAMPS
-                # =========================
                 "created_at": prediction.created_at.isoformat() if prediction.created_at else None,
                 "checked_at": prediction.checked_at.isoformat() if prediction.checked_at else None,
                 "started_at": prediction.started_at.isoformat() if prediction.started_at else None,
                 "finished_at": prediction.finished_at.isoformat() if prediction.finished_at else None,
                 "last_checked_at": prediction.last_checked_at.isoformat() if prediction.last_checked_at else None,
-
                 "result_source": prediction.result_source,
                 "last_status_text": prediction.last_status_text,
             }
@@ -684,19 +705,24 @@ def model_performance(
     market_map = {}
     for prediction, odds in resolved_rows:
         market_type = (prediction.market_type or "1x2").strip().lower() or "1x2"
-        market_entry = market_map.setdefault(market_type, {
-            "market_type": market_type,
-            "total": 0,
-            "hits": 0,
-            "misses": 0,
-            "profit": 0.0,
-            "stake": 0.0,
-        })
+        market_entry = market_map.setdefault(
+            market_type,
+            {
+                "market_type": market_type,
+                "total": 0,
+                "hits": 0,
+                "misses": 0,
+                "profit": 0.0,
+                "stake": 0.0,
+            },
+        )
         market_entry["total"] += 1
+
         if prediction.status == "hit":
             market_entry["hits"] += 1
         elif prediction.status == "miss":
             market_entry["misses"] += 1
+
         opening_odds = odds.opening_market_odds if odds else None
         profit = _calculate_profit(prediction.status, opening_odds)
         if profit is not None:
@@ -714,6 +740,7 @@ def model_performance(
         by_market.append(item)
 
     by_market.sort(key=lambda x: x["total"], reverse=True)
+
     tuning_service = PerformanceTuningService()
 
     return {
@@ -728,4 +755,6 @@ def model_performance(
         },
         "by_confidence": by_confidence,
         "by_league": by_league,
+        "by_market": by_market,
+        "historical_reliability": tuning_service.reliability_state(),
     }
