@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from typing import Dict, List, Set, Optional
 
@@ -32,6 +32,9 @@ class PostDeploySyncService:
 
     def _today(self) -> str:
         return self._now().strftime("%Y-%m-%d")
+
+    def _tomorrow(self) -> str:
+        return (self._now() + timedelta(days=1)).strftime("%Y-%m-%d")
 
     def _fixture_date(self, payload: Dict) -> str:
         fixture = payload.get("fixture") or {}
@@ -146,8 +149,7 @@ class PostDeploySyncService:
 
         return unique
 
-    def _filter_payloads_for_today(self, payloads: List[Dict]) -> List[Dict]:
-        today = self._today()
+    def _filter_payloads_for_dates(self, payloads: List[Dict], allowed_dates: Set[str]) -> List[Dict]:
         filtered: List[Dict] = []
 
         for payload in payloads:
@@ -162,11 +164,11 @@ class PostDeploySyncService:
                 )
                 continue
 
-            if fixture_date != today:
+            if fixture_date not in allowed_dates:
                 print(
-                    f"[POST_DEPLOY_SYNC] Ignorando fora do dia local | "
+                    f"[POST_DEPLOY_SYNC] Ignorando fora das datas alvo | "
                     f"fixture_id={fixture_id} | jogo={label} | "
-                    f"fixture_date={fixture_date} | today={today}"
+                    f"fixture_date={fixture_date} | allowed={sorted(allowed_dates)}"
                 )
                 continue
 
@@ -174,20 +176,22 @@ class PostDeploySyncService:
 
         return filtered
 
-    def _load_today_payloads(self) -> List[Dict]:
-        today = self._today()
+    def _load_payloads_for_dates(self, target_dates: List[str]) -> List[Dict]:
+        aggregated: List[Dict] = []
 
-        day_payloads = self.daily_service.get_all_day_payloads(today)
+        for target_date in target_dates:
+            day_payloads = self.daily_service.get_all_day_payloads(target_date)
+            print(
+                f"[POST_DEPLOY_SYNC] Jogos encontrados para {target_date}: "
+                f"{len(day_payloads)}"
+            )
+            aggregated.extend(day_payloads)
+
+        all_payloads = self._deduplicate_payloads(aggregated)
+        all_payloads = self._filter_payloads_for_dates(all_payloads, set(target_dates))
+
         print(
-            f"[POST_DEPLOY_SYNC] Jogos do dia inteiro encontrados: "
-            f"{len(day_payloads)}"
-        )
-
-        all_payloads = self._deduplicate_payloads(day_payloads)
-        all_payloads = self._filter_payloads_for_today(all_payloads)
-
-        print(
-            f"[POST_DEPLOY_SYNC] Total de jogos únicos válidos hoje: "
+            f"[POST_DEPLOY_SYNC] Total de jogos únicos válidos nas datas {target_dates}: "
             f"{len(all_payloads)}"
         )
         return all_payloads
@@ -308,9 +312,12 @@ class PostDeploySyncService:
     def run_once(self) -> Dict:
         print("[POST_DEPLOY_SYNC] Iniciando sincronização pós-deploy...")
 
-        payloads = self._load_today_payloads()
+        today = self._today()
+        tomorrow = self._tomorrow()
+        payloads = self._load_payloads_for_dates([today, tomorrow])
         processed = self._persist_payloads(payloads)
-        sent_alerts = self._send_missing_alerts(payloads)
+        today_payloads = [payload for payload in payloads if self._fixture_date(payload) == today]
+        sent_alerts = self._send_missing_alerts(today_payloads)
         updates = self._run_result_check()
 
         print("[POST_DEPLOY_SYNC] Sincronização pós-deploy finalizada com sucesso.")

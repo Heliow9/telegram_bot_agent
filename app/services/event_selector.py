@@ -51,8 +51,8 @@ def filter_morning_events(events: List[Dict]) -> List[Dict]:
 
 def filter_afternoon_events(events: List[Dict]) -> List[Dict]:
     """
-    Jogos futuros da tarde/noite.
-    Faixa sugerida: 12:00 até 23:59
+    Jogos futuros da tarde.
+    Faixa sugerida: 12:00 até 17:59
     """
     selected = []
 
@@ -64,7 +64,7 @@ def filter_afternoon_events(events: List[Dict]) -> List[Dict]:
         if hour is None:
             continue
 
-        if 12 <= hour <= 23:
+        if 12 <= hour < 18:
             selected.append(event)
 
     return sorted(
@@ -104,6 +104,32 @@ def filter_events_starting_in_30_minutes(
         diff_minutes = (dt_local - now).total_seconds() / 60.0
 
         if min_minutes <= diff_minutes <= max_minutes:
+            selected.append(event)
+
+    return sorted(
+        selected,
+        key=lambda e: event_to_local_datetime(
+            e.get("dateEvent", ""),
+            e.get("strTime", ""),
+        ) or now_local()
+    )
+
+def filter_night_events(events: List[Dict]) -> List[Dict]:
+    """
+    Jogos futuros da noite.
+    Faixa sugerida: 18:00 até 23:59
+    """
+    selected = []
+
+    for event in events:
+        if not _is_future_event(event):
+            continue
+
+        hour = _extract_hour(event)
+        if hour is None:
+            continue
+
+        if 18 <= hour <= 23:
             selected.append(event)
 
     return sorted(

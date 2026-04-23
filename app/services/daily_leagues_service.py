@@ -8,6 +8,7 @@ from app.services.analysis_service import AnalysisService
 from app.services.event_selector import (
     filter_morning_events,
     filter_afternoon_events,
+    filter_night_events,
     filter_events_starting_in_30_minutes,
 )
 
@@ -108,12 +109,57 @@ class DailyLeaguesService:
         date_event = str(event.get("dateEvent") or "").strip()
         return date_event == target_date
 
-    def _events_for_league_on_date(self, league_meta: Dict, date_str: str) -> List[Dict]:
-        raw_events = self.api.get_events_by_day_list(
-            date_str,
-            league_meta["name"],
-        )
+    def _dedupe_events(self, events: List[Dict]) -> List[Dict]:
+        deduped = []
+        seen = set()
 
+        for event in events or []:
+            event_id = str(event.get("idEvent") or "").strip()
+            compound = (
+                event_id,
+                str(event.get("strHomeTeam") or "").strip().lower(),
+                str(event.get("strAwayTeam") or "").strip().lower(),
+                str(event.get("dateEvent") or event.get("dateEventLocal") or "").strip(),
+                str(event.get("strTime") or event.get("strTimeLocal") or "").strip(),
+            )
+            if compound in seen:
+                continue
+            seen.add(compound)
+            deduped.append(event)
+
+        return deduped
+
+    def _events_for_league_on_date(self, league_meta: Dict, date_str: str) -> List[Dict]:
+        raw_events: List[Dict] = []
+
+        # 1) Busca principal por nome da liga
+        try:
+            by_name = self.api.get_events_by_day_list(date_str, league_meta["name"])
+            if by_name:
+                raw_events.extend(by_name)
+        except Exception as e:
+            print(f"[DAILY] Falha eventsday por nome em {league_meta['display_name']}: {e}")
+
+        # 2) Fallback por próximos jogos da liga (ajuda ligas como Copa do Brasil)
+        try:
+            by_next = self.api.get_next_events_by_league_list(str(league_meta["id"]))
+            if by_next:
+                raw_events.extend(by_next)
+        except Exception as e:
+            print(f"[DAILY] Falha eventsnextleague em {league_meta['display_name']}: {e}")
+
+        # 3) Fallback por temporada inteira
+        try:
+            by_season = self.api.get_events_by_season_list(
+                str(league_meta["id"]),
+                str(league_meta["season"]),
+            )
+            if by_season:
+                raw_events.extend(by_season)
+        except Exception as e:
+            print(f"[DAILY] Falha eventsseason em {league_meta['display_name']}: {e}")
+
+        raw_events = self._dedupe_events(raw_events)
         filtered_events = []
 
         for event in raw_events:
@@ -134,19 +180,21 @@ class DailyLeaguesService:
 
         print(
             f"[DAILY] {league_meta['display_name']} | "
-            f"data={date_str} | "
-            f"retornados={len(raw_events)} | "
+            f"data={date_str} | retornados={len(raw_events)} | "
             f"filtrados_dia_local={len(filtered_events)}"
         )
 
-        return filtered_events
+        return self._dedupe_events(filtered_events)
 
     def _select_events(self, events: List[Dict], selector_name: str) -> Tuple[List[Dict], str]:
         if selector_name == "morning":
             return filter_morning_events(events), "Manhã"
 
         if selector_name == "afternoon":
-            return filter_afternoon_events(events), "Tarde/Noite"
+            return filter_afternoon_events(events), "Tarde"
+
+        if selector_name == "night":
+            return filter_night_events(events), "Noite"
 
         if selector_name == "30min":
             return (
@@ -222,3 +270,7 @@ class DailyLeaguesService:
     def get_30min_payloads(self, date_str: Optional[str] = None) -> List[Dict]:
         target_date = date_str or self._today()
         return self._build_payloads_for_date(target_date, "30min")
+
+    def get_night_payloads(self, date_str: Optional[str] = None) -> List[Dict]:
+        target_date = date_str or self._today()
+        return self._build_payloads_for_date(target_date, "night")

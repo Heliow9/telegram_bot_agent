@@ -543,6 +543,7 @@ class MarketSelectorService:
                 "odds_12": odds.get("odds_12"),
             },
             "fair_odds": fair_odds,
+            
             "value_bet": {
                 "has_value": bool(decision.get("has_value")),
                 "edge": decision.get("edge"),

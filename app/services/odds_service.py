@@ -39,6 +39,9 @@ class OddsService:
             seen.add(key)
             cleaned.append(key)
 
+        if not cleaned and settings.odds_api_key:
+            cleaned.append(str(settings.odds_api_key).strip())
+
         return cleaned
 
     def is_available(self) -> bool:

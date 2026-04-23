@@ -1,6 +1,6 @@
 from apscheduler.schedulers.background import BackgroundScheduler
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
 import json
 import time
 
@@ -314,42 +314,119 @@ def job_send_afternoon_summary():
     started = _job_log_start("job_send_afternoon_summary")
     total_payloads = 0
 
-    print(f"[SCHEDULER] Rodando resumo da tarde/noite: {now_local()}")
+    print(f"[SCHEDULER] Rodando resumo da tarde: {now_local()}")
 
     summary_key = f"{now_local().strftime('%Y-%m-%d')}_afternoon"
     if _already_sent_summary(summary_key):
-        print("[SCHEDULER] Resumo da tarde/noite já enviado hoje.")
+        print("[SCHEDULER] Resumo da tarde já enviado hoje.")
         _job_log_end("job_send_afternoon_summary", started, sent=False, reason="already_sent")
         return
 
     try:
         payloads = daily_service.get_afternoon_payloads()
         total_payloads = len(payloads)
-        print(f"[SCHEDULER] Jogos encontrados para tarde/noite: {total_payloads}")
+        print(f"[SCHEDULER] Jogos encontrados para tarde: {total_payloads}")
     except Exception as e:
-        print(f"[SCHEDULER] Erro ao buscar jogos da tarde/noite: {e}")
+        print(f"[SCHEDULER] Erro ao buscar jogos da tarde: {e}")
         _job_log_end("job_send_afternoon_summary", started, success=False, error="fetch_payloads")
         return
 
     if not payloads:
         result = telegram.send_message(
-            "📭 *Nenhum jogo encontrado para a tarde/noite hoje.*\n\n"
-            "Ligas monitoradas: Brasileirão A, Brasileirão B, Premier League, Championship, "
+            "📭 *Nenhum jogo encontrado para a tarde hoje.*\n\n"
+            "Ligas monitoradas: Brasileirão A, Brasileirão B, Copa do Brasil, Premier League, Championship, "
             "Liga dos Campeões, Liga Europa, Bundesliga, Argentina Liga Profesional, Itália Série A, "
             "Turquia Super Lig, Libertadores e Copa Sul-Americana."
         )
-        print(f"[SCHEDULER] Aviso de tarde/noite sem jogos enviado: {result}")
+        print(f"[SCHEDULER] Aviso de tarde sem jogos enviado: {result}")
         _save_sent_summary(summary_key)
         _job_log_end("job_send_afternoon_summary", started, success=True, payloads=0)
         return
 
     try:
-        _send_ranked_summary(payloads, "tarde/noite")
+        _send_ranked_summary(payloads, "tarde")
         _save_sent_summary(summary_key)
         _job_log_end("job_send_afternoon_summary", started, success=True, payloads=total_payloads)
     except Exception as e:
-        print(f"[SCHEDULER] Erro ao enviar resumo da tarde/noite: {e}")
+        print(f"[SCHEDULER] Erro ao enviar resumo da tarde: {e}")
         _job_log_end("job_send_afternoon_summary", started, success=False, payloads=total_payloads)
+
+
+
+
+def job_send_night_summary():
+    started = _job_log_start("job_send_night_summary")
+    total_payloads = 0
+
+    print(f"[SCHEDULER] Rodando resumo da noite: {now_local()}")
+
+    summary_key = f"{now_local().strftime('%Y-%m-%d')}_night"
+    if _already_sent_summary(summary_key):
+        print("[SCHEDULER] Resumo da noite já enviado hoje.")
+        _job_log_end("job_send_night_summary", started, sent=False, reason="already_sent")
+        return
+
+    try:
+        payloads = daily_service.get_night_payloads()
+        total_payloads = len(payloads)
+        print(f"[SCHEDULER] Jogos encontrados para noite: {total_payloads}")
+    except Exception as e:
+        print(f"[SCHEDULER] Erro ao buscar jogos da noite: {e}")
+        _job_log_end("job_send_night_summary", started, success=False, error="fetch_payloads")
+        return
+
+    if not payloads:
+        result = telegram.send_message(
+            "📭 *Nenhum jogo encontrado para a noite hoje.*\n\n"
+            "Ligas monitoradas: Brasileirão A, Brasileirão B, Copa do Brasil, Premier League, Championship, "
+            "Liga dos Campeões, Liga Europa, Bundesliga, Argentina Liga Profesional, Itália Série A, "
+            "Turquia Super Lig, Libertadores e Copa Sul-Americana."
+        )
+        print(f"[SCHEDULER] Aviso de noite sem jogos enviado: {result}")
+        _save_sent_summary(summary_key)
+        _job_log_end("job_send_night_summary", started, success=True, payloads=0)
+        return
+
+    try:
+        _send_ranked_summary(payloads, "noite")
+        _save_sent_summary(summary_key)
+        _job_log_end("job_send_night_summary", started, success=True, payloads=total_payloads)
+    except Exception as e:
+        print(f"[SCHEDULER] Erro ao enviar resumo da noite: {e}")
+        _job_log_end("job_send_night_summary", started, success=False, payloads=total_payloads)
+
+
+def job_preload_upcoming_predictions():
+    started = _job_log_start("job_preload_upcoming_predictions")
+    try:
+        today = now_local().strftime("%Y-%m-%d")
+        tomorrow = (now_local() + timedelta(days=1)).strftime("%Y-%m-%d")
+
+        payloads_today = daily_service.get_all_day_payloads(today)
+        payloads_tomorrow = daily_service.get_all_day_payloads(tomorrow)
+        combined = payloads_today + payloads_tomorrow
+
+        if not combined:
+            _job_log_end(
+                "job_preload_upcoming_predictions",
+                started,
+                success=True,
+                payloads=0,
+                dates=[today, tomorrow],
+            )
+            return
+
+        _persist_payloads(combined, f"preload_upcoming:{today},{tomorrow}")
+        _job_log_end(
+            "job_preload_upcoming_predictions",
+            started,
+            success=True,
+            payloads=len(combined),
+            dates=[today, tomorrow],
+        )
+    except Exception as e:
+        print(f"[SCHEDULER] Erro no preload de previsões futuras: {e}")
+        _job_log_end("job_preload_upcoming_predictions", started, success=False)
 
 
 def run_missed_summaries_on_startup():
@@ -365,9 +442,11 @@ def run_missed_summaries_on_startup():
 
         morning_key = f"{today_str}_morning"
         afternoon_key = f"{today_str}_afternoon"
+        night_key = f"{today_str}_night"
 
         ran_morning = False
         ran_afternoon = False
+        ran_night = False
 
         if current_hhmm >= "08:00" and not _already_sent_summary(morning_key):
             print(
@@ -378,10 +457,19 @@ def run_missed_summaries_on_startup():
 
         if current_hhmm >= "12:30" and not _already_sent_summary(afternoon_key):
             print(
-                f"[SCHEDULER] Catch-up do resumo da tarde/noite acionado no startup | now={now}"
+                f"[SCHEDULER] Catch-up do resumo da tarde acionado no startup | now={now}"
             )
             job_send_afternoon_summary()
             ran_afternoon = True
+
+        if current_hhmm >= "18:00" and not _already_sent_summary(night_key):
+            print(
+                f"[SCHEDULER] Catch-up do resumo da noite acionado no startup | now={now}"
+            )
+            job_send_night_summary()
+            ran_night = True
+
+        job_preload_upcoming_predictions()
 
         _job_log_end(
             "run_missed_summaries_on_startup",
@@ -389,6 +477,7 @@ def run_missed_summaries_on_startup():
             success=True,
             ran_morning=ran_morning,
             ran_afternoon=ran_afternoon,
+            ran_night=ran_night,
         )
     except Exception as e:
         print(f"[SCHEDULER] Erro no catch-up de resumos no startup: {e}")
@@ -753,6 +842,29 @@ def start_scheduler():
         max_instances=1,
         coalesce=True,
         misfire_grace_time=2400,
+    )
+
+    scheduler.add_job(
+        job_send_night_summary,
+        "cron",
+        hour=18,
+        minute=0,
+        id="job_send_night_summary",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=2400,
+    )
+
+    scheduler.add_job(
+        job_preload_upcoming_predictions,
+        "interval",
+        hours=6,
+        id="job_preload_upcoming_predictions",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=600,
     )
 
     scheduler.add_job(

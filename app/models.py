@@ -32,6 +32,21 @@ class User(Base):
     )
 
 
+class RuntimeConfigState(Base):
+    __tablename__ = "runtime_config_state"
+
+    id = Column(Integer, primary_key=True, index=True)
+    config_key = Column(String(80), unique=True, index=True, nullable=False)
+    config_json = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
+
+
 class Prediction(Base):
     __tablename__ = "predictions"
 

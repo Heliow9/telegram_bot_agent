@@ -44,6 +44,7 @@ class Settings(BaseModel):
     gemini_api_key: str = os.getenv("GEMINI_API_KEY", "")
     gemini_model: str = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 
+    odds_api_key: str = os.getenv("ODDS_API_KEY", "")
     odds_regions: str = os.getenv("ODDS_REGIONS", "eu")
     odds_markets: str = os.getenv("ODDS_MARKETS", "h2h")
     odds_format: str = os.getenv("ODDS_FORMAT", "decimal")
