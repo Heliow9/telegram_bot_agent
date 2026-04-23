@@ -1,0 +1,61 @@
+{
+  "trained_at": "2026-04-17T00:32:37.449083-03:00",
+  "rows": 20,
+  "train_rows": 15,
+  "test_rows": 5,
+  "classes": [
+    "1",
+    "2"
+  ],
+  "class_distribution": {
+    "1": 12,
+    "2": 7,
+    "X": 1
+  },
+  "train_class_distribution": {
+    "1": 9,
+    "2": 6
+  },
+  "test_class_distribution": {
+    "1": 3,
+    "X": 1,
+    "2": 1
+  },
+  "features": [
+    "home_form_score",
+    "away_form_score",
+    "home_home_form_score",
+    "away_away_form_score",
+    "home_avg_goals_for",
+    "away_avg_goals_for",
+    "home_avg_goals_against",
+    "away_avg_goals_against",
+    "home_draw_rate",
+    "away_draw_rate",
+    "home_rank_strength",
+    "away_rank_strength",
+    "rank_diff",
+    "league_priority",
+    "sample_home",
+    "sample_away",
+    "form_diff",
+    "venue_form_diff",
+    "goal_diff_home",
+    "goal_diff_away",
+    "goal_diff_diff",
+    "attack_defense_diff",
+    "goals_for_diff",
+    "goals_against_diff",
+    "draw_rate_diff",
+    "home_venue_advantage",
+    "away_venue_advantage",
+    "venue_advantage_diff",
+    "sample_gap",
+    "venue_sample_home",
+    "venue_sample_away"
+  ],
+  "features_count": 31,
+  "accuracy": 0.4,
+  "log_loss": null,
+  "used_stratify": false
+}
