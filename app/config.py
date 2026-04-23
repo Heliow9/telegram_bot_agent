@@ -9,6 +9,13 @@ def _env_bool(name: str, default: str = "false") -> bool:
     return str(os.getenv(name, default)).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _env_list(name: str, default: str = "") -> list[str]:
+    raw = str(os.getenv(name, default)).strip()
+    if not raw:
+        return []
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
 class Settings(BaseModel):
     app_name: str = os.getenv("APP_NAME", "Bot Bet 1x2")
     app_env: str = os.getenv("APP_ENV", "dev")
@@ -54,6 +61,7 @@ class Settings(BaseModel):
     run_missed_summary_recovery_on_startup: bool = _env_bool("RUN_MISSED_SUMMARY_RECOVERY_ON_STARTUP", "false")
     create_tables_on_startup: bool = _env_bool("CREATE_TABLES_ON_STARTUP", "true")
     request_log_enabled: bool = _env_bool("REQUEST_LOG_ENABLED", "true")
+    cors_origins: list[str] = _env_list("CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173,https://bot-bet-front.onrender.com")
 
     database_url: str = os.getenv(
         "DATABASE_URL",

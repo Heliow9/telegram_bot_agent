@@ -128,11 +128,7 @@ app = FastAPI(title=settings.app_name, lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        "https://bot-bet-front.onrender.com",
-    ],
+    allow_origins=settings.cors_origins or ["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -145,6 +141,16 @@ app.include_router(settings_router)
 app.include_router(admin_router)
 
 
+def _apply_cors_headers(request: Request, response: JSONResponse) -> JSONResponse:
+    origin = request.headers.get("origin")
+    allowed = settings.cors_origins or []
+    if origin and ("*" in allowed or origin in allowed):
+        response.headers["Access-Control-Allow-Origin"] = origin if "*" not in allowed else "*"
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+        response.headers["Vary"] = "Origin"
+    return response
+
+
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
     try:
@@ -154,7 +160,7 @@ async def log_requests(request: Request, call_next):
         return response
     except Exception as e:
         logger.exception("Erro durante request %s %s: %s", request.method, request.url.path, e)
-        return JSONResponse(status_code=500, content={"detail": "Internal server error"})
+        return _apply_cors_headers(request, JSONResponse(status_code=500, content={"detail": str(e) if settings.app_env != "prod" else "Internal server error"}))
 
 
 @app.get("/")
