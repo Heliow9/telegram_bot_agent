@@ -31,7 +31,11 @@ class MarketSelectorService:
             return None
         return round(1.0 / probability, 4)
 
-    def _edge(self, probability: Optional[float], market_odds: Optional[float]) -> Optional[float]:
+    def _edge(
+        self,
+        probability: Optional[float],
+        market_odds: Optional[float],
+    ) -> Optional[float]:
         probability = self._safe_float(probability, default=0.0)
         market_odds = self._safe_float(market_odds, default=0.0)
 
@@ -39,6 +43,25 @@ class MarketSelectorService:
             return None
 
         return round((probability * market_odds) - 1.0, 4)
+
+    def _label_for_pick(self, pick: str, market_type: str) -> str:
+        pick = str(pick or "").upper().strip()
+        market_type = str(market_type or "").lower().strip()
+
+        if market_type == "double_chance":
+            mapping = {
+                "1X": "Casa ou Empate",
+                "X2": "Empate ou Fora",
+                "12": "Casa ou Fora",
+            }
+            return mapping.get(pick, pick)
+
+        mapping = {
+            "1": "Casa",
+            "X": "Empate",
+            "2": "Fora",
+        }
+        return mapping.get(pick, pick)
 
     def _build_1x2_candidates(self, probs: Dict, odds: Dict) -> list[Dict]:
         candidates = []
@@ -51,22 +74,27 @@ class MarketSelectorService:
         for pick, prob_key, odds_key in mapping:
             probability = self._safe_float(probs.get(prob_key))
             market_odds = self._safe_float(odds.get(odds_key), default=0.0)
-            if probability <= 0 or market_odds <= 1:
+
+            if probability <= 0:
                 continue
+
             fair_odds = self._fair_odds(probability)
             edge = self._edge(probability, market_odds)
+
             candidates.append(
                 {
                     "market_type": "1x2",
                     "suggested_pick": pick,
-                    "label": pick,
+                    "label": self._label_for_pick(pick, "1x2"),
                     "probability": round(probability, 4),
-                    "market_odds": round(market_odds, 4),
+                    "market_odds": round(market_odds, 4) if market_odds > 1 else None,
                     "fair_odds": fair_odds,
                     "edge": edge,
                     "has_value": bool(edge is not None and edge >= self.MIN_EDGE_TO_SEND),
+                    "odds_available": bool(market_odds > 1),
                 }
             )
+
         return candidates
 
     def _build_double_chance_candidates(self, probs: Dict, odds: Dict) -> list[Dict]:
@@ -78,21 +106,21 @@ class MarketSelectorService:
             {
                 "market_type": "double_chance",
                 "suggested_pick": "1X",
-                "label": "Casa ou Empate",
+                "label": self._label_for_pick("1X", "double_chance"),
                 "probability": round(prob_home + prob_draw, 4),
                 "market_odds": self._safe_float(odds.get("odds_1x"), default=0.0),
             },
             {
                 "market_type": "double_chance",
                 "suggested_pick": "X2",
-                "label": "Empate ou Fora",
+                "label": self._label_for_pick("X2", "double_chance"),
                 "probability": round(prob_draw + prob_away, 4),
                 "market_odds": self._safe_float(odds.get("odds_x2"), default=0.0),
             },
             {
                 "market_type": "double_chance",
                 "suggested_pick": "12",
-                "label": "Casa ou Fora",
+                "label": self._label_for_pick("12", "double_chance"),
                 "probability": round(prob_home + prob_away, 4),
                 "market_odds": self._safe_float(odds.get("odds_12"), default=0.0),
             },
@@ -100,22 +128,31 @@ class MarketSelectorService:
 
         candidates = []
         for item in dc_candidates:
-            if item["probability"] <= 0 or item["market_odds"] <= 1:
+            if item["probability"] <= 0:
                 continue
+
+            market_odds = self._safe_float(item.get("market_odds"), default=0.0)
             fair_odds = self._fair_odds(item["probability"])
-            edge = self._edge(item["probability"], item["market_odds"])
+            edge = self._edge(item["probability"], market_odds)
+
             candidates.append(
                 {
                     **item,
-                    "market_odds": round(item["market_odds"], 4),
+                    "market_odds": round(market_odds, 4) if market_odds > 1 else None,
                     "fair_odds": fair_odds,
                     "edge": edge,
                     "has_value": bool(edge is not None and edge >= self.MIN_EDGE_TO_SEND),
+                    "odds_available": bool(market_odds > 1),
                 }
             )
+
         return candidates
 
-    def _historical_adjustment(self, item: Dict, historical_context: Optional[Dict] = None) -> float:
+    def _historical_adjustment(
+        self,
+        item: Dict,
+        historical_context: Optional[Dict] = None,
+    ) -> float:
         pick = item.get("suggested_pick")
         market_type = item.get("market_type")
         confidence = item.get("confidence")
@@ -128,7 +165,12 @@ class MarketSelectorService:
         adjustment += self.performance_tuning.league_adjustment(league_name)
         return round(adjustment, 4)
 
-    def _feature_adjustment(self, item: Dict, features: Optional[Dict] = None, probs: Optional[Dict] = None) -> float:
+    def _feature_adjustment(
+        self,
+        item: Dict,
+        features: Optional[Dict] = None,
+        probs: Optional[Dict] = None,
+    ) -> float:
         features = features or {}
         probs = probs or {}
         pick = str(item.get("suggested_pick") or "").upper()
@@ -162,23 +204,41 @@ class MarketSelectorService:
 
         return round(score, 4)
 
-    def _rank_candidate(self, item: Dict, features: Optional[Dict] = None, probs: Optional[Dict] = None, historical_context: Optional[Dict] = None) -> float:
-        edge = self._safe_float(item.get("edge"))
+    def _rank_candidate(
+        self,
+        item: Dict,
+        features: Optional[Dict] = None,
+        probs: Optional[Dict] = None,
+        historical_context: Optional[Dict] = None,
+    ) -> float:
+        edge = item.get("edge")
         probability = self._safe_float(item.get("probability"))
         market_type = item.get("market_type")
+        odds_available = bool(item.get("odds_available"))
 
+        edge_score = (self._safe_float(edge) * 100) if edge is not None else 0.0
         bonus = 0.0
+
         if market_type == "1x2":
             bonus += 0.02
         elif market_type == "double_chance":
             bonus += 0.01
 
+        if not odds_available:
+            bonus -= 0.015
+
         bonus += self._feature_adjustment(item=item, features=features, probs=probs)
         bonus += self._historical_adjustment(item=item, historical_context=historical_context)
-        return round((edge * 100) + (probability * 10) + bonus, 4)
 
-    def _passes_minimum_rules(self, item: Dict, features: Optional[Dict] = None, probs: Optional[Dict] = None) -> bool:
-        edge = self._safe_float(item.get("edge"))
+        return round(edge_score + (probability * 10) + bonus, 4)
+
+    def _passes_minimum_rules(
+        self,
+        item: Dict,
+        features: Optional[Dict] = None,
+        probs: Optional[Dict] = None,
+    ) -> bool:
+        edge = item.get("edge")
         probability = self._safe_float(item.get("probability"))
         market_type = item.get("market_type")
         pick = str(item.get("suggested_pick") or "").upper()
@@ -191,8 +251,11 @@ class MarketSelectorService:
             self._safe_float(features.get("sample_away")),
         )
 
-        if edge < self.MIN_EDGE_TO_SEND:
-            return False
+        odds_available = bool(item.get("odds_available"))
+
+        if odds_available:
+            if self._safe_float(edge) < self.MIN_EDGE_TO_SEND:
+                return False
 
         if market_type == "1x2" and probability < self.MIN_PROBABILITY_1X2:
             return False
@@ -210,7 +273,13 @@ class MarketSelectorService:
 
         return True
 
-    def _build_confidence(self, probability: float, edge: float, market_type: str, features: Optional[Dict] = None) -> str:
+    def _build_confidence(
+        self,
+        probability: float,
+        edge: Optional[float],
+        market_type: str,
+        features: Optional[Dict] = None,
+    ) -> str:
         score = 0
         features = features or {}
         min_sample = min(
@@ -229,10 +298,12 @@ class MarketSelectorService:
             elif probability >= 0.54:
                 score += 1
 
-        if edge >= 0.08:
-            score += 2
-        elif edge >= 0.04:
-            score += 1
+        safe_edge = self._safe_float(edge, default=0.0)
+        if edge is not None:
+            if safe_edge >= 0.08:
+                score += 2
+            elif safe_edge >= 0.04:
+                score += 1
 
         if min_sample >= 7:
             score += 1
@@ -243,42 +314,163 @@ class MarketSelectorService:
             return "média"
         return "baixa"
 
-    def choose_best_market(self, probs: Dict, odds: Dict, features: Optional[Dict] = None, historical_context: Optional[Dict] = None) -> Dict:
+    def _fallback_pick_from_probabilities(self, probs: Dict, features: Optional[Dict] = None) -> Dict:
+        features = features or {}
+
+        prob_home = self._safe_float(probs.get("prob_home"))
+        prob_draw = self._safe_float(probs.get("prob_draw"))
+        prob_away = self._safe_float(probs.get("prob_away"))
+
+        prob_1x = round(prob_home + prob_draw, 4)
+        prob_x2 = round(prob_draw + prob_away, 4)
+        prob_12 = round(prob_home + prob_away, 4)
+
+        balanced = self._safe_float(features.get("balanced_match_indicator"))
+        high_draw = self._safe_float(features.get("high_draw_profile_indicator"))
+        low_scoring = self._safe_float(features.get("low_scoring_indicator"))
+
+        main_candidates = [
+            {
+                "market_type": "1x2",
+                "suggested_pick": "1",
+                "label": self._label_for_pick("1", "1x2"),
+                "probability": round(prob_home, 4),
+                "market_odds": None,
+                "fair_odds": self._fair_odds(prob_home),
+                "edge": None,
+                "has_value": False,
+                "odds_available": False,
+            },
+            {
+                "market_type": "1x2",
+                "suggested_pick": "X",
+                "label": self._label_for_pick("X", "1x2"),
+                "probability": round(prob_draw, 4),
+                "market_odds": None,
+                "fair_odds": self._fair_odds(prob_draw),
+                "edge": None,
+                "has_value": False,
+                "odds_available": False,
+            },
+            {
+                "market_type": "1x2",
+                "suggested_pick": "2",
+                "label": self._label_for_pick("2", "1x2"),
+                "probability": round(prob_away, 4),
+                "market_odds": None,
+                "fair_odds": self._fair_odds(prob_away),
+                "edge": None,
+                "has_value": False,
+                "odds_available": False,
+            },
+        ]
+
+        dc_candidates = [
+            {
+                "market_type": "double_chance",
+                "suggested_pick": "1X",
+                "label": self._label_for_pick("1X", "double_chance"),
+                "probability": prob_1x,
+                "market_odds": None,
+                "fair_odds": self._fair_odds(prob_1x),
+                "edge": None,
+                "has_value": False,
+                "odds_available": False,
+            },
+            {
+                "market_type": "double_chance",
+                "suggested_pick": "X2",
+                "label": self._label_for_pick("X2", "double_chance"),
+                "probability": prob_x2,
+                "market_odds": None,
+                "fair_odds": self._fair_odds(prob_x2),
+                "edge": None,
+                "has_value": False,
+                "odds_available": False,
+            },
+            {
+                "market_type": "double_chance",
+                "suggested_pick": "12",
+                "label": self._label_for_pick("12", "double_chance"),
+                "probability": prob_12,
+                "market_odds": None,
+                "fair_odds": self._fair_odds(prob_12),
+                "edge": None,
+                "has_value": False,
+                "odds_available": False,
+            },
+        ]
+
+        prefer_double_chance = False
+
+        if max(prob_home, prob_draw, prob_away) < 0.50 and max(prob_1x, prob_x2, prob_12) >= 0.64:
+            prefer_double_chance = True
+
+        if (balanced >= 1 or high_draw >= 1 or low_scoring >= 1) and max(prob_1x, prob_x2, prob_12) >= 0.66:
+            prefer_double_chance = True
+
+        target_pool = dc_candidates if prefer_double_chance else main_candidates
+        ranked = sorted(
+            target_pool,
+            key=lambda item: self._rank_candidate(item, features=features, probs=probs),
+            reverse=True,
+        )
+        best = ranked[0]
+        best["confidence"] = self._build_confidence(
+            probability=self._safe_float(best.get("probability")),
+            edge=None,
+            market_type=str(best.get("market_type") or ""),
+            features=features,
+        )
+        best["all_candidates"] = sorted(
+            main_candidates + dc_candidates,
+            key=lambda item: self._rank_candidate(item, features=features, probs=probs),
+            reverse=True,
+        )
+        return best
+
+    def choose_best_market(
+        self,
+        probs: Dict,
+        odds: Dict,
+        features: Optional[Dict] = None,
+        historical_context: Optional[Dict] = None,
+    ) -> Dict:
         candidates_1x2 = self._build_1x2_candidates(probs=probs, odds=odds)
         candidates_dc = self._build_double_chance_candidates(probs=probs, odds=odds)
         all_candidates = candidates_1x2 + candidates_dc
 
         if not all_candidates:
-            return {
-                "market_type": None,
-                "suggested_pick": None,
-                "label": None,
-                "probability": 0.0,
-                "market_odds": None,
-                "fair_odds": None,
-                "edge": None,
-                "has_value": False,
-                "confidence": "baixa",
-                "all_candidates": [],
-            }
+            return self._fallback_pick_from_probabilities(probs=probs, features=features)
 
         valid_candidates = [
-            item for item in all_candidates
+            item
+            for item in all_candidates
             if self._passes_minimum_rules(item, features=features, probs=probs)
         ]
         target_pool = valid_candidates if valid_candidates else all_candidates
 
         ranked = sorted(
             target_pool,
-            key=lambda item: self._rank_candidate(item, features=features, probs=probs, historical_context=historical_context),
+            key=lambda item: self._rank_candidate(
+                item,
+                features=features,
+                probs=probs,
+                historical_context=historical_context,
+            ),
             reverse=True,
         )
 
         best = ranked[0]
         probability = self._safe_float(best.get("probability"))
-        edge = self._safe_float(best.get("edge"))
+        edge = best.get("edge")
         market_type = str(best.get("market_type") or "")
-        confidence = self._build_confidence(probability=probability, edge=edge, market_type=market_type, features=features)
+        confidence = self._build_confidence(
+            probability=probability,
+            edge=edge,
+            market_type=market_type,
+            features=features,
+        )
 
         return {
             **best,
@@ -287,7 +479,12 @@ class MarketSelectorService:
                 [
                     {
                         **item,
-                        "ranking_score": self._rank_candidate(item, features=features, probs=probs, historical_context=historical_context),
+                        "ranking_score": self._rank_candidate(
+                            item,
+                            features=features,
+                            probs=probs,
+                            historical_context=historical_context,
+                        ),
                     }
                     for item in all_candidates
                 ],
@@ -296,7 +493,14 @@ class MarketSelectorService:
             ),
         }
 
-    def build_analysis_payload(self, probs: Dict, odds: Dict, features: Optional[Dict] = None, model_source: str = "ml", historical_context: Optional[Dict] = None) -> Dict:
+    def build_analysis_payload(
+        self,
+        probs: Dict,
+        odds: Dict,
+        features: Optional[Dict] = None,
+        model_source: str = "ml",
+        historical_context: Optional[Dict] = None,
+    ) -> Dict:
         decision = self.choose_best_market(
             probs=probs,
             odds=odds,
