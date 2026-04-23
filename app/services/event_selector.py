@@ -78,8 +78,8 @@ def filter_afternoon_events(events: List[Dict]) -> List[Dict]:
 
 def filter_events_starting_in_30_minutes(
     events: List[Dict],
-    min_minutes: int = 28,
-    max_minutes: int = 31,
+    min_minutes: int = 25,
+    max_minutes: int = 35,
 ) -> List[Dict]:
     """
     Seleciona jogos cuja partida começa em uma janela próxima dos 30 minutos.

@@ -5,6 +5,7 @@ from app.services.sportsdb_api import SportsDBAPI
 from app.services.prediction_store import (
     get_pending_predictions,
     update_prediction_result,
+    update_prediction_live_state,
     build_stats,
 )
 from app.services.time_utils import parse_event_utc, now_utc
@@ -50,6 +51,9 @@ class ResultCheckerService:
             return ""
         return str(fixture_id).strip()
 
+    def _normalize_pick(self, value: Optional[str]) -> str:
+        return str(value or "").strip().upper()
+
     def _safe_int(self, value) -> Optional[int]:
         try:
             if value is None or value == "":
@@ -85,7 +89,11 @@ class ResultCheckerService:
     def _normalize_status_text(self, value: Optional[str]) -> str:
         return str(value or "").strip()
 
-    def _result_from_scores(self, home_score: Optional[int], away_score: Optional[int]) -> Optional[str]:
+    def _result_from_scores(
+        self,
+        home_score: Optional[int],
+        away_score: Optional[int],
+    ) -> Optional[str]:
         if home_score is None or away_score is None:
             return None
         if home_score > away_score:
@@ -94,9 +102,34 @@ class ResultCheckerService:
             return "2"
         return "X"
 
+    def _pick_is_winner(self, pick: Optional[str], result: Optional[str]) -> bool:
+        pick = self._normalize_pick(pick)
+        result = self._normalize_pick(result)
+
+        if not pick or not result:
+            return False
+
+        if pick in {"1", "X", "2"}:
+            return pick == result
+
+        if pick == "1X":
+            return result in {"1", "X"}
+
+        if pick == "X2":
+            return result in {"X", "2"}
+
+        if pick == "12":
+            return result in {"1", "2"}
+
+        return False
+
     def _is_match_time_expired(self, details: Dict) -> bool:
-        date_event = str(details.get("dateEvent") or details.get("date_event") or "").strip()
-        time_event = str(details.get("strTime") or details.get("time_event") or "").strip()
+        date_event = str(
+            details.get("dateEvent") or details.get("date_event") or ""
+        ).strip()
+        time_event = str(
+            details.get("strTime") or details.get("time_event") or ""
+        ).strip()
 
         event_dt_utc = parse_event_utc(date_event, time_event)
         if event_dt_utc is None:
@@ -195,15 +228,21 @@ class ResultCheckerService:
             )
 
         return {
-            "fixture_id": str(details.get("idEvent") or details.get("fixture_id") or ""),
+            "fixture_id": str(
+                details.get("idEvent") or details.get("fixture_id") or ""
+            ),
             "finished": finished,
             "home_score": home_score,
             "away_score": away_score,
             "result": result,
             "status_text": self._normalize_status_text(status_text),
             "locked": self._normalize_locked(details.get("strLocked")),
-            "date_event": str(details.get("dateEvent") or details.get("date_event") or "").strip(),
-            "time_event": str(details.get("strTime") or details.get("time_event") or "").strip(),
+            "date_event": str(
+                details.get("dateEvent") or details.get("date_event") or ""
+            ).strip(),
+            "time_event": str(
+                details.get("strTime") or details.get("time_event") or ""
+            ).strip(),
         }
 
     def _merge_result_sources(
@@ -237,8 +276,12 @@ class ResultCheckerService:
         merged_finished = raw_finished or bool((detail_result or {}).get("finished"))
         merged_status = raw_status or (detail_result or {}).get("status_text")
         merged_locked = result_data.get("locked") or (detail_result or {}).get("locked")
-        merged_date_event = result_data.get("date_event") or (detail_result or {}).get("date_event")
-        merged_time_event = result_data.get("time_event") or (detail_result or {}).get("time_event")
+        merged_date_event = result_data.get("date_event") or (
+            detail_result or {}
+        ).get("date_event")
+        merged_time_event = result_data.get("time_event") or (
+            detail_result or {}
+        ).get("time_event")
 
         merged_result = None
         if merged_finished:
@@ -315,9 +358,24 @@ class ResultCheckerService:
                 continue
 
             if not merged.get("finished"):
+                try:
+                    update_prediction_live_state(
+                        fixture_id=fixture_id,
+                        home_score=merged.get("home_score"),
+                        away_score=merged.get("away_score"),
+                        status_text=merged.get("status_text"),
+                        is_live=merged.get("is_live", False),
+                    )
+                except Exception as e:
+                    print(
+                        f"[RESULT CHECKER] Erro ao atualizar live state fixture={fixture_id}: {e}"
+                    )
+
                 print(
                     f"[RESULT CHECKER] Ainda não finalizado: {fixture_id} | "
-                    f"status={merged.get('status_text')} | locked={merged.get('locked')}"
+                    f"status={merged.get('status_text')} | "
+                    f"locked={merged.get('locked')} | "
+                    f"is_live={merged.get('is_live')}"
                 )
                 continue
 
@@ -346,25 +404,38 @@ class ResultCheckerService:
                 finished=merged.get("finished", False),
             )
 
-            updates.append({
-                "fixture_id": fixture_id,
-                "league": item.get("league"),
-                "home_team": item.get("home_team"),
-                "away_team": item.get("away_team"),
-                "pick": item.get("pick"),
-                "confidence": item.get("confidence"),
-                "real_result": merged["result"],
-                "home_score": merged["home_score"],
-                "away_score": merged["away_score"],
-                "status": "hit" if str(item.get("pick")) == str(merged["result"]) else "miss",
-                "home_badge": event_details.get("strHomeTeamBadge") if event_details else None,
-                "away_badge": event_details.get("strAwayTeamBadge") if event_details else None,
-            })
+            final_status = (
+                "hit"
+                if self._pick_is_winner(item.get("pick"), merged["result"])
+                else "miss"
+            )
+
+            updates.append(
+                {
+                    "fixture_id": fixture_id,
+                    "league": item.get("league"),
+                    "home_team": item.get("home_team"),
+                    "away_team": item.get("away_team"),
+                    "pick": item.get("pick"),
+                    "market_type": item.get("market_type"),  # importante para mensagem/relatório
+                    "confidence": item.get("confidence"),
+                    "real_result": merged["result"],
+                    "home_score": merged["home_score"],
+                    "away_score": merged["away_score"],
+                    "status": final_status,
+                    "home_badge": event_details.get("strHomeTeamBadge")
+                    if event_details
+                    else None,
+                    "away_badge": event_details.get("strAwayTeamBadge")
+                    if event_details
+                    else None,
+                }
+            )
 
             print(
                 f"[RESULT CHECKER] Atualizado fixture={fixture_id} | "
                 f"placar={merged['home_score']}x{merged['away_score']} | "
-                f"resultado={merged['result']}"
+                f"resultado={merged['result']} | status={final_status}"
             )
 
         return updates

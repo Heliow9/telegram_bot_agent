@@ -79,11 +79,15 @@ class TrainingDatasetService:
             league_priority=league_meta["priority"],
         )
 
+        fixture_id = str(event.get("idEvent", "")).strip()
+        if not fixture_id:
+            return None
+
         row = {
             **features,
             "target": self._get_target_from_scores(home_score, away_score),
             "league": league_meta["display_name"],
-            "fixture_id": str(event.get("idEvent", "")).strip(),
+            "fixture_id": fixture_id,
             "home_team": home_team,
             "away_team": away_team,
             "home_score": home_score,
@@ -111,14 +115,76 @@ class TrainingDatasetService:
 
         return None
 
+    def _features_are_new_schema(self, features: Dict) -> bool:
+        expected_new_keys = {
+            "form_diff",
+            "venue_form_diff",
+            "goal_diff_home",
+            "goal_diff_away",
+            "goal_diff_diff",
+            "attack_defense_diff",
+            "goals_for_diff",
+            "goals_against_diff",
+            "draw_rate_diff",
+            "home_venue_advantage",
+            "away_venue_advantage",
+            "venue_advantage_diff",
+            "sample_gap",
+            "venue_sample_home",
+            "venue_sample_away",
+        }
+        return expected_new_keys.issubset(set(features.keys()))
+
+    def _rebuild_features_from_legacy_prediction(self, features: Dict) -> Dict:
+        home_general_form = {
+            "form_score": features.get("home_form_score", 0.0),
+            "avg_goals_for": features.get("home_avg_goals_for", 0.0),
+            "avg_goals_against": features.get("home_avg_goals_against", 0.0),
+            "draw_rate": features.get("home_draw_rate", 0.0),
+            "sample_size": features.get("sample_home", 0),
+        }
+
+        away_general_form = {
+            "form_score": features.get("away_form_score", 0.0),
+            "avg_goals_for": features.get("away_avg_goals_for", 0.0),
+            "avg_goals_against": features.get("away_avg_goals_against", 0.0),
+            "draw_rate": features.get("away_draw_rate", 0.0),
+            "sample_size": features.get("sample_away", 0),
+        }
+
+        home_home_form = {
+            "form_score": features.get("home_home_form_score", 0.0),
+            "avg_goals_for": features.get("home_avg_goals_for", 0.0),
+            "avg_goals_against": features.get("home_avg_goals_against", 0.0),
+            "draw_rate": features.get("home_draw_rate", 0.0),
+            "sample_size": features.get("sample_home", 0),
+        }
+
+        away_away_form = {
+            "form_score": features.get("away_away_form_score", 0.0),
+            "avg_goals_for": features.get("away_avg_goals_for", 0.0),
+            "avg_goals_against": features.get("away_avg_goals_against", 0.0),
+            "draw_rate": features.get("away_draw_rate", 0.0),
+            "sample_size": features.get("sample_away", 0),
+        }
+
+        return build_match_features(
+            home_general_form=home_general_form,
+            away_general_form=away_general_form,
+            home_home_form=home_home_form,
+            away_away_form=away_away_form,
+            home_rank=None,
+            away_rank=None,
+            total_teams=20,
+            league_priority=features.get("league_priority", 99),
+        )
+
     def build_training_row_from_prediction_db(self, item: Prediction) -> Optional[Dict]:
         if item.status not in ("hit", "miss"):
             return None
 
-        features = self._parse_features_json(item.features_json)
         result = str(item.result or "").strip().upper()
-
-        if not features or result not in ("1", "X", "2"):
+        if result not in ("1", "X", "2"):
             return None
 
         if item.home_score is None or item.away_score is None:
@@ -127,6 +193,13 @@ class TrainingDatasetService:
         fixture_id = str(item.fixture_id or "").strip()
         if not fixture_id:
             return None
+
+        features = self._parse_features_json(item.features_json)
+        if not features:
+            return None
+
+        if not self._features_are_new_schema(features):
+            features = self._rebuild_features_from_legacy_prediction(features)
 
         row = {
             **features,

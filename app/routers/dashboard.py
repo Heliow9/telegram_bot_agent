@@ -4,7 +4,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
-from sqlalchemy import func, case, desc
+from sqlalchemy import func, case, desc, and_
 
 from app.config import settings
 from app.db import get_db
@@ -12,6 +12,7 @@ from app.models import Prediction, PredictionOdds
 from app.schemas import PredictionListResponse
 from app.deps import get_current_user
 from app.services.ml_model_service import MLModelService
+from app.services.performance_tuning_service import PerformanceTuningService
 
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
@@ -64,9 +65,18 @@ def _serialize_prediction(prediction: Prediction):
         "match_date": prediction.match_date,
         "match_time": prediction.match_time,
         "pick": prediction.pick,
+        "market_type": prediction.market_type,
+        "main_market_pick": prediction.main_market_pick,
+        "double_chance_pick": prediction.double_chance_pick,
         "prob_home": prediction.prob_home,
         "prob_draw": prediction.prob_draw,
         "prob_away": prediction.prob_away,
+        "prob_1x": prediction.prob_1x,
+        "prob_x2": prediction.prob_x2,
+        "prob_12": prediction.prob_12,
+        "main_market_probability": prediction.main_market_probability,
+        "double_chance_probability": prediction.double_chance_probability,
+        "best_probability": prediction.best_probability,
         "confidence": prediction.confidence,
         "model_source": prediction.model_source,
         "status": prediction.status,
@@ -74,11 +84,11 @@ def _serialize_prediction(prediction: Prediction):
         "home_score": prediction.home_score,
         "away_score": prediction.away_score,
         "features_json": prediction.features_json,
-        "created_at": prediction.created_at,
-        "checked_at": prediction.checked_at,
-        "started_at": prediction.started_at,
-        "finished_at": prediction.finished_at,
-        "last_checked_at": prediction.last_checked_at,
+        "created_at": prediction.created_at.isoformat() if prediction.created_at else None,
+        "checked_at": prediction.checked_at.isoformat() if prediction.checked_at else None,
+        "started_at": prediction.started_at.isoformat() if prediction.started_at else None,
+        "finished_at": prediction.finished_at.isoformat() if prediction.finished_at else None,
+        "last_checked_at": prediction.last_checked_at.isoformat() if prediction.last_checked_at else None,
         "result_source": prediction.result_source,
         "last_status_text": prediction.last_status_text,
         "is_live": prediction.is_live,
@@ -87,6 +97,7 @@ def _serialize_prediction(prediction: Prediction):
 
 def _build_model_status():
     ml_model = MLModelService()
+    tuning_service = PerformanceTuningService()
     metadata = ml_model.get_metadata() if hasattr(ml_model, "get_metadata") else {}
 
     model_loaded = ml_model.is_available()
@@ -107,7 +118,7 @@ def _build_model_status():
     return {
         "model_loaded": model_loaded,
         "model_path": str(MODEL_PATH),
-        "last_training_at": last_training_at,
+        "last_training_at": metadata.get("trained_at") or last_training_at,
         "rows": metadata.get("rows", 0),
         "train_rows": metadata.get("train_rows", 0),
         "test_rows": metadata.get("test_rows", 0),
@@ -117,6 +128,8 @@ def _build_model_status():
         "class_distribution": metadata.get("class_distribution", {}),
         "features_count": len(features),
         "features": features,
+        "effective_ml_weight": _estimate_effective_ml_weight(metadata),
+        "historical_reliability": tuning_service.reliability_state(),
     }
 
 
@@ -155,9 +168,16 @@ def dashboard_summary(
         or 0
     )
 
+    live_filter = and_(
+        Prediction.is_live.is_(True),
+        Prediction.status == "pending",
+        Prediction.started_at.is_not(None),
+        Prediction.finished_at.is_(None),
+    )
+
     live_predictions = (
         db.query(func.count(Prediction.id))
-        .filter(Prediction.is_live.is_(True))
+        .filter(live_filter)
         .scalar()
         or 0
     )
@@ -225,10 +245,10 @@ def dashboard_summary(
     today_live_predictions = (
         db.query(func.count(Prediction.id))
         .filter(
-            Prediction.is_live.is_(True),
-            Prediction.last_checked_at.is_not(None),
-            Prediction.last_checked_at >= start_utc,
-            Prediction.last_checked_at < end_utc,
+            live_filter,
+            Prediction.started_at.is_not(None),
+            Prediction.started_at >= start_utc,
+            Prediction.started_at < end_utc,
         )
         .scalar()
         or 0
@@ -411,46 +431,134 @@ def market_overview(
         opening = odds.opening_market_odds
         latest = odds.latest_market_odds
 
+        # =========================
+        # MOVEMENT
+        # =========================
         movement = None
         movement_direction = "stable"
 
-        if opening is not None and latest is not None:
-            movement = round(float(latest) - float(opening), 2)
-            if movement < 0:
-                movement_direction = "down"
-            elif movement > 0:
-                movement_direction = "up"
+        try:
+            if opening is not None and latest is not None:
+                opening = float(opening)
+                latest = float(latest)
 
+                movement = round(latest - opening, 2)
+
+                if movement > 0:
+                    movement_direction = "up"
+                elif movement < 0:
+                    movement_direction = "down"
+        except Exception:
+            movement = None
+            movement_direction = "stable"
+
+        # =========================
+        # FAIR ODDS (baseado no pick)
+        # =========================
+        fair_odds = None
+
+        try:
+            pick = (prediction.pick or "").upper()
+
+            if pick == "1":
+                fair_odds = odds.fair_home_odds
+            elif pick == "X":
+                fair_odds = odds.fair_draw_odds
+            elif pick == "2":
+                fair_odds = odds.fair_away_odds
+            elif pick == "1X":
+                fair_odds = odds.fair_odds_1x
+            elif pick == "X2":
+                fair_odds = odds.fair_odds_x2
+            elif pick == "12":
+                fair_odds = odds.fair_odds_12
+        except Exception:
+            fair_odds = None
+
+        # =========================
+        # MARKET TYPE (futuro-ready)
+        # =========================
+        market_type = getattr(prediction, "market_type", None) or "1x2"
+
+        # =========================
+        # STATUS NORMALIZATION
+        # =========================
+        status = (prediction.status or "").lower()
+
+        if status not in ["pending", "hit", "miss"]:
+            status = "pending"
+
+        # =========================
+        # ITEM FINAL
+        # =========================
         items.append(
             {
                 "prediction_id": prediction.id,
                 "fixture_id": prediction.fixture_id,
+
                 "league_name": prediction.league_name,
                 "home_team": prediction.home_team,
                 "away_team": prediction.away_team,
+
+                "match_date": prediction.match_date,
+                "match_time": prediction.match_time,
+
                 "pick": prediction.pick,
-                "status": prediction.status,
+                "market_type": market_type,
+
+                "status": status,
                 "result": prediction.result,
+
                 "home_score": prediction.home_score,
                 "away_score": prediction.away_score,
+
+                "confidence": prediction.confidence,
+
+                # =========================
+                # ODDS
+                # =========================
                 "bookmaker": odds.bookmaker,
                 "opening_market_odds": odds.opening_market_odds,
                 "latest_market_odds": odds.latest_market_odds,
+
+                "fair_odds": fair_odds,
+                "edge": odds.edge,
+                "has_value_bet": odds.has_value_bet,
+                "home_odds": odds.home_odds,
+                "draw_odds": odds.draw_odds,
+                "away_odds": odds.away_odds,
+                "odds_1x": odds.odds_1x,
+                "odds_x2": odds.odds_x2,
+                "odds_12": odds.odds_12,
                 "fair_home_odds": odds.fair_home_odds,
                 "fair_draw_odds": odds.fair_draw_odds,
                 "fair_away_odds": odds.fair_away_odds,
-                "edge": odds.edge,
-                "has_value_bet": odds.has_value_bet,
+                "fair_odds_1x": odds.fair_odds_1x,
+                "fair_odds_x2": odds.fair_odds_x2,
+                "fair_odds_12": odds.fair_odds_12,
+
+                # =========================
+                # MOVEMENT
+                # =========================
                 "movement": movement,
                 "movement_direction": movement_direction,
+
+                # =========================
+                # STATUS AUX
+                # =========================
+                "is_live": prediction.is_live,
+
+                # =========================
+                # TIMESTAMPS
+                # =========================
                 "created_at": prediction.created_at.isoformat() if prediction.created_at else None,
                 "checked_at": prediction.checked_at.isoformat() if prediction.checked_at else None,
                 "started_at": prediction.started_at.isoformat() if prediction.started_at else None,
                 "finished_at": prediction.finished_at.isoformat() if prediction.finished_at else None,
                 "last_checked_at": prediction.last_checked_at.isoformat() if prediction.last_checked_at else None,
+
                 "result_source": prediction.result_source,
                 "last_status_text": prediction.last_status_text,
-                "is_live": prediction.is_live,
             }
         )
 
@@ -572,6 +680,41 @@ def model_performance(
         by_league.append(item)
 
     by_league.sort(key=lambda x: x["total"], reverse=True)
+
+    market_map = {}
+    for prediction, odds in resolved_rows:
+        market_type = (prediction.market_type or "1x2").strip().lower() or "1x2"
+        market_entry = market_map.setdefault(market_type, {
+            "market_type": market_type,
+            "total": 0,
+            "hits": 0,
+            "misses": 0,
+            "profit": 0.0,
+            "stake": 0.0,
+        })
+        market_entry["total"] += 1
+        if prediction.status == "hit":
+            market_entry["hits"] += 1
+        elif prediction.status == "miss":
+            market_entry["misses"] += 1
+        opening_odds = odds.opening_market_odds if odds else None
+        profit = _calculate_profit(prediction.status, opening_odds)
+        if profit is not None:
+            market_entry["profit"] += profit
+            market_entry["stake"] += 1.0
+
+    by_market = []
+    for _, item in market_map.items():
+        total = item["total"]
+        stake = item["stake"]
+        item["accuracy"] = round(item["hits"] / total, 4) if total else 0.0
+        item["profit"] = round(item["profit"], 2)
+        item["stake"] = round(stake, 2)
+        item["roi"] = round(item["profit"] / stake, 4) if stake else 0.0
+        by_market.append(item)
+
+    by_market.sort(key=lambda x: x["total"], reverse=True)
+    tuning_service = PerformanceTuningService()
 
     return {
         "summary": {

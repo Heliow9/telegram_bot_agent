@@ -1,7 +1,7 @@
 from contextlib import asynccontextmanager
 import logging
-import os
 import threading
+from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -14,7 +14,10 @@ from app.routers.auth import router as auth_router
 from app.routers.dashboard import router as dashboard_router
 from app.routers.settings import router as settings_router
 from app.routers.admin import router as admin_router
-from app.services.scheduler_service import start_scheduler
+from app.services.scheduler_service import (
+    start_scheduler,
+    run_missed_summaries_on_startup,
+)
 from app.services.post_deploy_sync_service import PostDeploySyncService
 
 logging.basicConfig(
@@ -25,11 +28,28 @@ logger = logging.getLogger(__name__)
 
 _scheduler_started = False
 _post_deploy_sync_ran = False
+_startup_summary_recovery_ran = False
+
+
+def reset_training_artifacts() -> None:
+    logger.info("🧹 Resetando artefatos de treino (dataset/modelo)...")
+    paths = [
+        Path("data/historical_training_matches.csv"),
+        Path("models/1x2_model.joblib"),
+        Path("models/1x2_model_metadata.json"),
+    ]
+
+    for path in paths:
+        try:
+            if path.exists():
+                path.unlink()
+                logger.info("🗑️ Removido: %s", path)
+        except Exception as e:
+            logger.warning("⚠️ Erro ao remover %s: %s", path, e)
 
 
 def safe_start_scheduler() -> None:
     global _scheduler_started
-
     if _scheduler_started:
         logger.info("⏭️ Scheduler já havia sido iniciado. Ignorando nova inicialização.")
         return
@@ -44,9 +64,7 @@ def safe_start_scheduler() -> None:
 
 def safe_run_post_deploy_sync() -> None:
     global _post_deploy_sync_ran
-
-    if _post_deploy_sync_ran:
-        logger.info("⏭️ Pós-deploy sync já executado nesta instância. Ignorando.")
+    if _post_deploy_sync_ran or not settings.run_post_deploy_sync_on_startup:
         return
 
     try:
@@ -59,38 +77,54 @@ def safe_run_post_deploy_sync() -> None:
         logger.exception("❌ Erro na sincronização pós-deploy: %s", e)
 
 
-def start_background_jobs() -> None:
-    def run():
-        safe_run_post_deploy_sync()
-        safe_start_scheduler()
+def safe_run_startup_summary_recovery() -> None:
+    global _startup_summary_recovery_ran
+    if _startup_summary_recovery_ran or not settings.run_missed_summary_recovery_on_startup:
+        return
 
-    thread = threading.Thread(
-        target=run,
-        name="botbet-background-jobs",
-        daemon=True,
-    )
+    try:
+        logger.info("📨 Verificando resumos perdidos por horário de deploy...")
+        run_missed_summaries_on_startup()
+        _startup_summary_recovery_ran = True
+        logger.info("✅ Recuperação de resumos concluída")
+    except Exception as e:
+        logger.exception("❌ Erro na recuperação de resumos: %s", e)
+
+
+def should_run_background_jobs() -> bool:
+    if settings.app_role == "scheduler":
+        return True
+    return settings.enable_background_jobs
+
+
+def start_background_jobs() -> None:
+    if not should_run_background_jobs():
+        logger.info("⏭️ Background jobs desativados nesta instância | role=%s", settings.app_role)
+        return
+
+    def run():
+        safe_start_scheduler()
+        safe_run_post_deploy_sync()
+        safe_run_startup_summary_recovery()
+
+    thread = threading.Thread(target=run, name="botbet-background-jobs", daemon=True)
     thread.start()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("🚀 Iniciando aplicação...")
-    logger.info("📊 Ambiente: %s", settings.app_env)
+    logger.info("📊 Ambiente: %s | role=%s", settings.app_env, settings.app_role)
 
-    Base.metadata.create_all(bind=engine)
+    if settings.create_tables_on_startup:
+        Base.metadata.create_all(bind=engine)
 
-    # mantém scheduler e pós-deploy fora da thread principal da API
     start_background_jobs()
-
     yield
-
     logger.info("🛑 Encerrando aplicação...")
 
 
-app = FastAPI(
-    title=settings.app_name,
-    lifespan=lifespan,
-)
+app = FastAPI(title=settings.app_name, lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -115,24 +149,12 @@ app.include_router(admin_router)
 async def log_requests(request: Request, call_next):
     try:
         response = await call_next(request)
-        logger.info(
-            "%s %s -> %s",
-            request.method,
-            request.url.path,
-            response.status_code,
-        )
+        if settings.request_log_enabled:
+            logger.info("%s %s -> %s", request.method, request.url.path, response.status_code)
         return response
     except Exception as e:
-        logger.exception(
-            "Erro durante request %s %s: %s",
-            request.method,
-            request.url.path,
-            e,
-        )
-        return JSONResponse(
-            status_code=500,
-            content={"detail": "Internal server error"},
-        )
+        logger.exception("Erro durante request %s %s: %s", request.method, request.url.path, e)
+        return JSONResponse(status_code=500, content={"detail": "Internal server error"})
 
 
 @app.get("/")
@@ -140,9 +162,12 @@ def root():
     return {
         "name": settings.app_name,
         "env": settings.app_env,
+        "role": settings.app_role,
         "status": "running",
+        "background_jobs_enabled": should_run_background_jobs(),
         "scheduler_started": _scheduler_started,
         "post_deploy_sync_ran": _post_deploy_sync_ran,
+        "startup_summary_recovery_ran": _startup_summary_recovery_ran,
     }
 
 
@@ -152,8 +177,11 @@ def health():
         "status": "ok",
         "service": settings.app_name,
         "env": settings.app_env,
+        "role": settings.app_role,
+        "background_jobs_enabled": should_run_background_jobs(),
         "scheduler_started": _scheduler_started,
         "post_deploy_sync_ran": _post_deploy_sync_ran,
+        "startup_summary_recovery_ran": _startup_summary_recovery_ran,
     }
 
 
@@ -169,14 +197,4 @@ def health_head():
 
 @app.get("/ping")
 def ping():
-    return {
-        "pong": True,
-        "message": "service awake",
-    }
-
-
-if __name__ == "__main__":
-    import uvicorn
-
-    port = int(os.environ.get("PORT", 10000))
-    uvicorn.run("app.main:app", host="0.0.0.0", port=port, reload=False)
+    return {"pong": True, "role": settings.app_role}

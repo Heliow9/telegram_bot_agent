@@ -42,6 +42,7 @@ ml_training_service = MLTrainingService()
 odds_service = OddsService()
 
 scheduler_started = False
+training_job_running = False
 
 ALERT_STORE_PATH = Path("data/sent_alerts.json")
 RESULT_STORE_PATH = Path("data/sent_results.json")
@@ -102,6 +103,38 @@ def _already_sent_alert(alert_key: str) -> bool:
     return alert_key in _load_sent_alerts()
 
 
+def _cleanup_old_alert_keys():
+    alerts = _load_sent_alerts()
+    if not alerts:
+        return 0
+
+    today_prefix = now_local().strftime("%Y-%m-%d")
+    filtered = []
+
+    for key in alerts:
+        text = str(key or "").strip()
+
+        if not text:
+            continue
+
+        if today_prefix in text:
+            filtered.append(text)
+            continue
+
+        if "_" in text and today_prefix not in text:
+            continue
+
+        filtered.append(text)
+
+    removed = max(0, len(alerts) - len(filtered))
+
+    if removed > 0:
+        _save_json_list(ALERT_STORE_PATH, filtered)
+        print(f"[SCHEDULER] Limpeza de sent_alerts concluída | removidos={removed}")
+
+    return removed
+
+
 def _load_sent_results():
     return _load_json_list(RESULT_STORE_PATH)
 
@@ -140,6 +173,41 @@ def build_result_key(fixture_id: str) -> str:
     return f"{fixture_id}_result"
 
 
+def _normalize_market_type(value) -> str:
+    return str(value or "1x2").strip().lower()
+
+
+def _normalize_pick(value) -> str:
+    return str(value or "").strip().upper()
+
+
+def _pick_latest_market_odds_by_market(
+    market_type: str,
+    pick: str,
+    odds: dict,
+):
+    market_type = _normalize_market_type(market_type)
+    pick = _normalize_pick(pick)
+    odds = odds or {}
+
+    if market_type == "double_chance":
+        if pick == "1X":
+            return odds.get("odds_1x")
+        if pick == "X2":
+            return odds.get("odds_x2")
+        if pick == "12":
+            return odds.get("odds_12")
+        return None
+
+    if pick == "1":
+        return odds.get("home_odds")
+    if pick == "X":
+        return odds.get("draw_odds")
+    if pick == "2":
+        return odds.get("away_odds")
+    return None
+
+
 def _persist_payloads(payloads: list[dict], source_label: str):
     saved = 0
 
@@ -175,10 +243,13 @@ def _send_ranked_summary(payloads: list[dict], period_label: str):
     desired_order = [
         "Brasileirão Série A",
         "Brasileirão Série B",
+        "Copa do Brasil",
         "Premier League",
+        "LaLiga",
         "Championship",
         "Liga dos Campeões",
         "Liga Europa",
+        "Bundesliga",
         "Argentina Liga Profesional",
         "Itália Série A",
         "Turquia Super Lig",
@@ -221,8 +292,8 @@ def job_send_morning_summary():
     if not payloads:
         result = telegram.send_message(
             "📭 *Nenhum jogo encontrado pela manhã hoje.*\n\n"
-            "Ligas monitoradas: Brasileirão A, Brasileirão B, Premier League, Championship, "
-            "Liga dos Campeões, Liga Europa, Argentina Liga Profesional, Itália Série A, "
+            "Ligas monitoradas: Brasileirão A, Brasileirão B, Premier League, LaLiga, Championship, "
+            "Liga dos Campeões, Liga Europa, Bundesliga, Argentina Liga Profesional, Itália Série A, "
             "Turquia Super Lig, Libertadores e Copa Sul-Americana."
         )
         print(f"[SCHEDULER] Aviso de manhã sem jogos enviado: {result}")
@@ -264,7 +335,7 @@ def job_send_afternoon_summary():
         result = telegram.send_message(
             "📭 *Nenhum jogo encontrado para a tarde/noite hoje.*\n\n"
             "Ligas monitoradas: Brasileirão A, Brasileirão B, Premier League, Championship, "
-            "Liga dos Campeões, Liga Europa, Argentina Liga Profesional, Itália Série A, "
+            "Liga dos Campeões, Liga Europa, Bundesliga, Argentina Liga Profesional, Itália Série A, "
             "Turquia Super Lig, Libertadores e Copa Sul-Americana."
         )
         print(f"[SCHEDULER] Aviso de tarde/noite sem jogos enviado: {result}")
@@ -281,6 +352,49 @@ def job_send_afternoon_summary():
         _job_log_end("job_send_afternoon_summary", started, success=False, payloads=total_payloads)
 
 
+def run_missed_summaries_on_startup():
+    """
+    Garante envio dos resumos se a instância subir depois do horário programado.
+    """
+    started = _job_log_start("run_missed_summaries_on_startup")
+
+    try:
+        now = now_local()
+        current_hhmm = now.strftime("%H:%M")
+        today_str = now.strftime("%Y-%m-%d")
+
+        morning_key = f"{today_str}_morning"
+        afternoon_key = f"{today_str}_afternoon"
+
+        ran_morning = False
+        ran_afternoon = False
+
+        if current_hhmm >= "08:00" and not _already_sent_summary(morning_key):
+            print(
+                f"[SCHEDULER] Catch-up do resumo da manhã acionado no startup | now={now}"
+            )
+            job_send_morning_summary()
+            ran_morning = True
+
+        if current_hhmm >= "12:30" and not _already_sent_summary(afternoon_key):
+            print(
+                f"[SCHEDULER] Catch-up do resumo da tarde/noite acionado no startup | now={now}"
+            )
+            job_send_afternoon_summary()
+            ran_afternoon = True
+
+        _job_log_end(
+            "run_missed_summaries_on_startup",
+            started,
+            success=True,
+            ran_morning=ran_morning,
+            ran_afternoon=ran_afternoon,
+        )
+    except Exception as e:
+        print(f"[SCHEDULER] Erro no catch-up de resumos no startup: {e}")
+        _job_log_end("run_missed_summaries_on_startup", started, success=False)
+
+
 def _refresh_clv_for_pending_predictions():
     if not odds_service.is_available():
         print("[CLV] OddsService indisponível. Pulando refresh de linha.")
@@ -295,12 +409,13 @@ def _refresh_clv_for_pending_predictions():
 
     for item in pending:
         try:
-            fixture_id = str(item.get("fixture_id", ""))
+            fixture_id = str(item.get("fixture_id", "")).strip()
             league_name = item.get("league")
             home_team = item.get("home_team")
             away_team = item.get("away_team")
             match_date = item.get("date", "")
-            pick = item.get("pick")
+            pick = _normalize_pick(item.get("pick"))
+            market_type = _normalize_market_type(item.get("market_type"))
 
             if not fixture_id or not league_name or not home_team or not away_team or not pick:
                 continue
@@ -315,13 +430,11 @@ def _refresh_clv_for_pending_predictions():
             if not odds:
                 continue
 
-            latest_market_odds = None
-            if pick == "1":
-                latest_market_odds = odds.get("home_odds")
-            elif pick == "X":
-                latest_market_odds = odds.get("draw_odds")
-            elif pick == "2":
-                latest_market_odds = odds.get("away_odds")
+            latest_market_odds = _pick_latest_market_odds_by_market(
+                market_type=market_type,
+                pick=pick,
+                odds=odds,
+            )
 
             if latest_market_odds is not None:
                 update_prediction_market_odds(fixture_id, latest_market_odds)
@@ -359,7 +472,7 @@ def job_check_games():
     for payload in payloads:
         try:
             fixture = payload["fixture"]
-            fixture_id = str(fixture.get("id", ""))
+            fixture_id = str(fixture.get("id", "")).strip()
             home_team = fixture.get("home_team", "Casa")
             away_team = fixture.get("away_team", "Fora")
 
@@ -428,7 +541,7 @@ def job_check_results():
 
     for item in updates:
         try:
-            fixture_id = str(item.get("fixture_id", ""))
+            fixture_id = str(item.get("fixture_id", "")).strip()
             result_key = build_result_key(fixture_id)
 
             if _already_sent_result(result_key):
@@ -490,26 +603,94 @@ def job_monitor_live_matches():
         _job_log_end("job_monitor_live_matches", started, success=False)
 
 
-def job_daily_training():
-    started = _job_log_start("job_daily_training")
+def execute_training_job(trigger: str = "manual"):
+    global training_job_running
 
-    print(f"[TRAINING] Rodando treino diário: {now_local()}")
+    started = _job_log_start(f"training_job:{trigger}")
+
+    if training_job_running:
+        message = "Já existe um treino em andamento."
+        print(f"[TRAINING] {message}")
+        _job_log_end(
+            f"training_job:{trigger}",
+            started,
+            success=False,
+            skipped=True,
+            reason="already_running",
+        )
+        return {
+            "success": False,
+            "skipped": True,
+            "message": message,
+            "trigger": trigger,
+        }
+
+    training_job_running = True
 
     try:
-        training_dataset_service.append_resolved_predictions_to_dataset()
-        ml_training_service.train()
-        print("[TRAINING] Treino diário concluído com sucesso.")
-        _job_log_end("job_daily_training", started, success=True)
+        print(f"[TRAINING] Rodando treino ({trigger}): {now_local()}")
+
+        added = training_dataset_service.append_resolved_predictions_to_dataset()
+        print(f"[TRAINING] Dataset atualizado | novas linhas líquidas={added}")
+
+        train_result = ml_training_service.train()
+
+        result = {
+            "success": True,
+            "skipped": False,
+            "trigger": trigger,
+            "added": added,
+            "train_result": train_result,
+            "message": "Treino executado com sucesso.",
+            "executed_at": now_local().isoformat(),
+        }
+
+        print(f"[TRAINING] Treino ({trigger}) concluído com sucesso.")
+        _job_log_end(
+            f"training_job:{trigger}",
+            started,
+            success=True,
+            added=added,
+        )
+        return result
+
     except Exception as e:
-        print(f"[TRAINING] Erro no treino diário: {e}")
-        _job_log_end("job_daily_training", started, success=False)
+        print(f"[TRAINING] Erro no treino ({trigger}): {e}")
+        _job_log_end(
+            f"training_job:{trigger}",
+            started,
+            success=False,
+            error=str(e),
+        )
+        return {
+            "success": False,
+            "skipped": False,
+            "trigger": trigger,
+            "message": f"Erro ao executar treino: {e}",
+            "error": str(e),
+            "executed_at": now_local().isoformat(),
+        }
+
+    finally:
+        training_job_running = False
+
+
+def run_manual_training_job():
+    return execute_training_job(trigger="manual")
+
+
+def job_daily_training():
+    result = execute_training_job(trigger="scheduled")
+
+    if result.get("success"):
+        print("[TRAINING] Treino diário concluído com sucesso.")
+    elif result.get("skipped"):
+        print(f"[TRAINING] Treino diário ignorado: {result.get('message')}")
+    else:
+        print(f"[TRAINING] Erro no treino diário: {result.get('message')}")
 
 
 def run_today_audit():
-    """
-    Auditoria simples do dia:
-    reexecuta checker de resultados para pegar inconsistências do dia atual.
-    """
     started = _job_log_start("run_today_audit")
     try:
         updates = result_checker.check_pending_predictions()
@@ -535,6 +716,10 @@ def start_scheduler():
         print("[SCHEDULER] Já iniciado, ignorando nova inicialização.")
         return
 
+    removed_alerts = _cleanup_old_alert_keys()
+    if removed_alerts:
+        print(f"[SCHEDULER] Chaves antigas de alerta removidas no startup: {removed_alerts}")
+
     runtime = _runtime_config()
     live_enabled = bool(
         runtime.get("live_monitor_enabled", settings.live_monitor_enabled)
@@ -555,7 +740,7 @@ def start_scheduler():
         replace_existing=True,
         max_instances=1,
         coalesce=True,
-        misfire_grace_time=120,
+        misfire_grace_time=2400,
     )
 
     scheduler.add_job(
@@ -567,7 +752,7 @@ def start_scheduler():
         replace_existing=True,
         max_instances=1,
         coalesce=True,
-        misfire_grace_time=120,
+        misfire_grace_time=2400,
     )
 
     scheduler.add_job(
@@ -630,6 +815,9 @@ def start_scheduler():
 
     scheduler.start()
     scheduler_started = True
+
+    run_missed_summaries_on_startup()
+
     print("[SCHEDULER] Iniciado com sucesso.")
     print("[SCHEDULER] Aguardando primeiro ciclo automático dos jobs...")
 

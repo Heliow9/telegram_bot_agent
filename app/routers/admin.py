@@ -38,8 +38,9 @@ def run_today_audit_route(current_user=Depends(get_current_user)):
 @router.post("/run-post-deploy-sync")
 def run_post_deploy_sync(current_user=Depends(get_current_user)):
     service = PostDeploySyncService()
-    service.run_once()
+    result = service.run_once()
     return {
         "success": True,
         "message": "Sincronização pós-deploy executada com sucesso.",
+        "result": result,
     }
