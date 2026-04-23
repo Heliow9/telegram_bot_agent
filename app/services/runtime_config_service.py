@@ -17,7 +17,7 @@ DEFAULT_CONFIG = {
     "live_signal_min_on_target_diff": settings.live_signal_min_on_target_diff,
     "live_signal_min_possession_diff": settings.live_signal_min_possession_diff,
     "telegram_send_to_main_chat": True,
-    "telegram_send_to_channel": False,
+    "telegram_send_to_channel": True,
     "odds_api_keys": [],
 }
 
