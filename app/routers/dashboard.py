@@ -111,6 +111,8 @@ def _estimate_effective_ml_weight(metadata: dict) -> float:
 
 
 def _serialize_prediction(prediction: Prediction):
+    odds = getattr(prediction, "odds", None)
+
     return {
         "id": prediction.id,
         "fixture_id": prediction.fixture_id,
@@ -148,6 +150,11 @@ def _serialize_prediction(prediction: Prediction):
         "result_source": prediction.result_source,
         "last_status_text": prediction.last_status_text,
         "is_live": prediction.is_live,
+        "opening_market_odds": odds.opening_market_odds if odds else None,
+        "latest_market_odds": odds.latest_market_odds if odds else None,
+        "edge": odds.edge if odds else None,
+        "has_value_bet": odds.has_value_bet if odds else False,
+        "bookmaker": odds.bookmaker if odds else None,
     }
 
 
@@ -573,6 +580,11 @@ def market_overview(
                 "movement": movement,
                 "movement_direction": movement_direction,
                 "is_live": prediction.is_live,
+        "opening_market_odds": odds.opening_market_odds if odds else None,
+        "latest_market_odds": odds.latest_market_odds if odds else None,
+        "edge": odds.edge if odds else None,
+        "has_value_bet": odds.has_value_bet if odds else False,
+        "bookmaker": odds.bookmaker if odds else None,
                 "created_at": prediction.created_at.isoformat() if prediction.created_at else None,
                 "checked_at": prediction.checked_at.isoformat() if prediction.checked_at else None,
                 "started_at": prediction.started_at.isoformat() if prediction.started_at else None,

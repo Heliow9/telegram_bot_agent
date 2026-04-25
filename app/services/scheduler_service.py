@@ -5,6 +5,8 @@ import json
 import time
 
 from app.config import settings
+from app.db import SessionLocal
+from app.models import Prediction
 from app.services.daily_leagues_service import DailyLeaguesService
 from app.services.telegram_service import TelegramService
 from app.services.message_formatter import (
@@ -47,6 +49,7 @@ training_job_running = False
 ALERT_STORE_PATH = Path("data/sent_alerts.json")
 RESULT_STORE_PATH = Path("data/sent_results.json")
 SUMMARY_STORE_PATH = Path("data/sent_summaries.json")
+TURN_RESULT_STORE_PATH = Path("data/sent_turn_result_summaries.json")
 
 
 def _runtime_config():
@@ -164,6 +167,20 @@ def _save_sent_summary(summary_key: str):
 def _already_sent_summary(summary_key: str) -> bool:
     return summary_key in _load_sent_summaries()
 
+
+def _load_sent_turn_results():
+    return _load_json_list(TURN_RESULT_STORE_PATH)
+
+
+def _save_sent_turn_result(key: str):
+    sent = _load_sent_turn_results()
+    if key not in sent:
+        sent.append(key)
+        _save_json_list(TURN_RESULT_STORE_PATH, sent)
+
+
+def _already_sent_turn_result(key: str) -> bool:
+    return key in _load_sent_turn_results()
 
 def build_alert_key(fixture_id: str) -> str:
     return f"{fixture_id}_30min"
@@ -382,6 +399,121 @@ def job_send_night_summary():
             "Liga dos Campeões, Liga Europa, Bundesliga, Argentina Liga Profesional, Itália Série A, "
             "Turquia Super Lig, Libertadores e Copa Sul-Americana."
         )
+
+def _period_time_bounds(period: str) -> tuple[str, str, str]:
+    if period == "morning":
+        return "08:00:00", "11:59:59", "manhã"
+    if period == "afternoon":
+        return "12:00:00", "17:59:59", "tarde"
+    return "18:00:00", "23:59:59", "noite"
+
+
+def job_send_turn_result_summary(period: str):
+    started = _job_log_start(f"job_send_turn_result_summary:{period}")
+    today = now_local().strftime("%Y-%m-%d")
+    key = f"{today}_{period}_turn_result"
+
+    if _already_sent_turn_result(key):
+        print(f"[TURN_RESULT] Parcial já enviada | key={key}")
+        _job_log_end(
+            f"job_send_turn_result_summary:{period}",
+            started,
+            sent=False,
+            reason="already_sent",
+        )
+        return
+
+    start_time, end_time, label = _period_time_bounds(period)
+    db = SessionLocal()
+
+    try:
+        rows = (
+            db.query(Prediction)
+            .filter(
+                Prediction.match_date == today,
+                Prediction.match_time >= start_time,
+                Prediction.match_time <= end_time,
+            )
+            .order_by(Prediction.match_time.asc(), Prediction.league_name.asc())
+            .all()
+        )
+
+        total = len(rows)
+        resolved = [r for r in rows if r.status in ("hit", "miss")]
+        pending = [r for r in rows if r.status == "pending"]
+        hits = [r for r in resolved if r.status == "hit"]
+        misses = [r for r in resolved if r.status == "miss"]
+        accuracy = (len(hits) / len(resolved)) if resolved else 0
+
+        if total == 0:
+            message = (
+                f"📊 *Parcial da {label}*\n\n"
+                "Nenhum palpite registrado para este turno até agora."
+            )
+        else:
+            lines = [
+                f"📊 *Parcial da {label}*",
+                "",
+                f"✅ Acertos: *{len(hits)}*",
+                f"❌ Erros: *{len(misses)}*",
+                f"⏳ Pendentes: *{len(pending)}*",
+                f"🎯 Aproveitamento parcial: *{accuracy * 100:.2f}%*",
+            ]
+
+            if misses:
+                lines.append("")
+                lines.append("❌ *Erros do turno:*")
+                for item in misses[:8]:
+                    home_score = item.home_score if item.home_score is not None else "-"
+                    away_score = item.away_score if item.away_score is not None else "-"
+                    lines.append(
+                        f"• {item.match_time[:5]} | {item.home_team} x {item.away_team} "
+                        f"| pick {item.pick} | placar {home_score}x{away_score}"
+                    )
+
+            if hits:
+                lines.append("")
+                lines.append("✅ *Acertos do turno:*")
+                for item in hits[:8]:
+                    home_score = item.home_score if item.home_score is not None else "-"
+                    away_score = item.away_score if item.away_score is not None else "-"
+                    lines.append(
+                        f"• {item.match_time[:5]} | {item.home_team} x {item.away_team} "
+                        f"| pick {item.pick} | placar {home_score}x{away_score}"
+                    )
+
+            message = "\n".join(lines)
+
+        result = telegram.send_message(message)
+        if result.get("ok"):
+            _save_sent_turn_result(key)
+
+        _job_log_end(
+            f"job_send_turn_result_summary:{period}",
+            started,
+            success=bool(result.get("ok")),
+            total=total,
+            hits=len(hits),
+            misses=len(misses),
+            pending=len(pending),
+        )
+    except Exception as e:
+        print(f"[TURN_RESULT] Erro ao enviar parcial {period}: {e}")
+        _job_log_end(f"job_send_turn_result_summary:{period}", started, success=False)
+    finally:
+        db.close()
+
+
+def job_send_morning_result_summary():
+    return job_send_turn_result_summary("morning")
+
+
+def job_send_afternoon_result_summary():
+    return job_send_turn_result_summary("afternoon")
+
+
+def job_send_night_result_summary():
+    return job_send_turn_result_summary("night")
         print(f"[SCHEDULER] Aviso de noite sem jogos enviado: {result}")
         _save_sent_summary(summary_key)
         _job_log_end("job_send_night_summary", started, success=True, payloads=0)
@@ -455,6 +587,9 @@ def run_missed_summaries_on_startup():
             job_send_morning_summary()
             ran_morning = True
 
+        if current_hhmm >= "12:20" and not _already_sent_turn_result(f"{today_str}_morning_turn_result"):
+            job_send_morning_result_summary()
+
         if current_hhmm >= "12:30" and not _already_sent_summary(afternoon_key):
             print(
                 f"[SCHEDULER] Catch-up do resumo da tarde acionado no startup | now={now}"
@@ -462,12 +597,18 @@ def run_missed_summaries_on_startup():
             job_send_afternoon_summary()
             ran_afternoon = True
 
+        if current_hhmm >= "17:50" and not _already_sent_turn_result(f"{today_str}_afternoon_turn_result"):
+            job_send_afternoon_result_summary()
+
         if current_hhmm >= "18:00" and not _already_sent_summary(night_key):
             print(
                 f"[SCHEDULER] Catch-up do resumo da noite acionado no startup | now={now}"
             )
             job_send_night_summary()
             ran_night = True
+
+        if current_hhmm >= "23:55" and not _already_sent_turn_result(f"{today_str}_night_turn_result"):
+            job_send_night_result_summary()
 
         job_preload_upcoming_predictions()
 
@@ -857,6 +998,42 @@ def start_scheduler():
     )
 
     scheduler.add_job(
+        job_send_morning_result_summary,
+        "cron",
+        hour=12,
+        minute=20,
+        id="job_send_morning_result_summary",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=1800,
+    )
+
+    scheduler.add_job(
+        job_send_afternoon_result_summary,
+        "cron",
+        hour=17,
+        minute=50,
+        id="job_send_afternoon_result_summary",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=1800,
+    )
+
+    scheduler.add_job(
+        job_send_night_result_summary,
+        "cron",
+        hour=23,
+        minute=55,
+        id="job_send_night_result_summary",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=1800,
+    )
+
+    scheduler.add_job(
         job_preload_upcoming_predictions,
         "interval",
         hours=6,
@@ -927,8 +1104,6 @@ def start_scheduler():
 
     scheduler.start()
     scheduler_started = True
-
-    run_missed_summaries_on_startup()
 
     print("[SCHEDULER] Iniciado com sucesso.")
     print("[SCHEDULER] Aguardando primeiro ciclo automático dos jobs...")

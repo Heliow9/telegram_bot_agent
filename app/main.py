@@ -17,6 +17,7 @@ from app.routers.admin import router as admin_router
 from app.services.scheduler_service import (
     start_scheduler,
     run_missed_summaries_on_startup,
+    execute_training_job,
 )
 from app.services.post_deploy_sync_service import PostDeploySyncService
 
@@ -103,10 +104,12 @@ def start_background_jobs() -> None:
         return
 
     def run():
+        logger.info("Executando treino inicial antes dos jobs...")
+        training_result = execute_training_job(trigger="startup")
+        logger.info("Treino inicial finalizado | success=%s", training_result.get("success"))
         safe_start_scheduler()
         safe_run_post_deploy_sync()
         safe_run_startup_summary_recovery()
-
     thread = threading.Thread(target=run, name="botbet-background-jobs", daemon=True)
     thread.start()
 
