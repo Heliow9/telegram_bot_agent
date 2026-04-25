@@ -47,9 +47,10 @@ def filter_night_events(events: List[Dict]) -> List[Dict]:
 
 def filter_events_starting_in_30_minutes(
     events: List[Dict],
-    min_minutes: int = 29,
-    max_minutes: int = 35,
+    min_minutes: int = 0,
+    max_minutes: int = 30,
 ) -> List[Dict]:
+    """Seleciona jogos dentro dos 30 minutos antes do kickoff; nunca jogos futuros fora da janela."""
     now = now_local()
     selected = []
     for event in events:

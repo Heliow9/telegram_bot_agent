@@ -374,6 +374,16 @@ def _send_ranked_summary(payloads: list[dict], period_label: str):
         print(f"[SCHEDULER] Resumo enviado para liga {league_name}: {result}")
 
 
+
+def _preload_turn_payloads(payloads: list[dict], period_label: str):
+    """Persiste palpites do turno para dashboard sem enviar palpites no Telegram."""
+    _persist_payloads(payloads, f"preload_{period_label}")
+    print(
+        f"[SCHEDULER] Preload do turno concluído sem envio Telegram | "
+        f"periodo={period_label} | payloads={len(payloads)}"
+    )
+
+
 def job_send_morning_summary():
     started = _job_log_start("job_send_morning_summary")
     total_payloads = 0
@@ -396,19 +406,13 @@ def job_send_morning_summary():
         return
 
     if not payloads:
-        result = telegram.send_message(
-            "📭 *Nenhum jogo encontrado pela manhã hoje.*\n\n"
-            "Ligas monitoradas: Brasileirão A, Brasileirão B, Premier League, LaLiga, Championship, "
-            "Liga dos Campeões, Liga Europa, Bundesliga, Argentina Liga Profesional, Itália Série A, "
-            "Turquia Super Lig, Libertadores e Copa Sul-Americana."
-        )
-        print(f"[SCHEDULER] Aviso de manhã sem jogos enviado: {result}")
+        print("[SCHEDULER] Nenhum jogo encontrado para manhã para preload.")
         _save_sent_summary(summary_key)
         _job_log_end("job_send_morning_summary", started, success=True, payloads=0)
         return
 
     try:
-        _send_ranked_summary(payloads, "manhã")
+        _preload_turn_payloads(payloads, "manhã")
         _save_sent_summary(summary_key)
         _job_log_end("job_send_morning_summary", started, success=True, payloads=total_payloads)
     except Exception as e:
@@ -438,19 +442,13 @@ def job_send_afternoon_summary():
         return
 
     if not payloads:
-        result = telegram.send_message(
-            "📭 *Nenhum jogo encontrado para a tarde hoje.*\n\n"
-            "Ligas monitoradas: Brasileirão A, Brasileirão B, Copa do Brasil, Premier League, Championship, "
-            "Liga dos Campeões, Liga Europa, Bundesliga, Argentina Liga Profesional, Itália Série A, "
-            "Turquia Super Lig, Libertadores e Copa Sul-Americana."
-        )
-        print(f"[SCHEDULER] Aviso de tarde sem jogos enviado: {result}")
+        print("[SCHEDULER] Nenhum jogo encontrado para tarde para preload.")
         _save_sent_summary(summary_key)
         _job_log_end("job_send_afternoon_summary", started, success=True, payloads=0)
         return
 
     try:
-        _send_ranked_summary(payloads, "tarde")
+        _preload_turn_payloads(payloads, "tarde")
         _save_sent_summary(summary_key)
         _job_log_end("job_send_afternoon_summary", started, success=True, payloads=total_payloads)
     except Exception as e:
@@ -482,19 +480,13 @@ def job_send_night_summary():
         return
 
     if not payloads:
-        result = telegram.send_message(
-            "📭 *Nenhum jogo encontrado para a noite hoje.*\n\n"
-            "Ligas monitoradas: Brasileirão A, Brasileirão B, Copa do Brasil, Premier League, Championship, "
-            "Liga dos Campeões, Liga Europa, Bundesliga, Argentina Liga Profesional, Itália Série A, "
-            "Turquia Super Lig, Libertadores e Copa Sul-Americana."
-        )
-        print(f"[SCHEDULER] Aviso de noite sem jogos enviado: {result}")
+        print("[SCHEDULER] Nenhum jogo encontrado para noite para preload.")
         _save_sent_summary(summary_key)
         _job_log_end("job_send_night_summary", started, success=True, payloads=0)
         return
 
     try:
-        _send_ranked_summary(payloads, "noite")
+        _preload_turn_payloads(payloads, "noite")
         _save_sent_summary(summary_key)
         _job_log_end("job_send_night_summary", started, success=True, payloads=total_payloads)
     except Exception as e:
@@ -582,6 +574,10 @@ def run_missed_summaries_on_startup():
             job_send_night_partial_summary()
 
         job_preload_upcoming_predictions()
+
+        # Recupera apenas jogos que estejam dentro dos 30 minutos antes do kickoff.
+        # Não dispara palpites futuros do dia inteiro após deploy/restart.
+        job_check_games()
 
         _job_log_end(
             "run_missed_summaries_on_startup",
