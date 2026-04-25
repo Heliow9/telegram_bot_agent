@@ -537,7 +537,7 @@ def job_preload_upcoming_predictions():
 
 def run_missed_summaries_on_startup():
     """
-    Garante envio das grades e parciais se a instância subir depois do horário programado.
+    Garante envio dos resumos se a instância subir depois do horário programado.
     """
     started = _job_log_start("run_missed_summaries_on_startup")
 
@@ -555,31 +555,25 @@ def run_missed_summaries_on_startup():
         ran_night = False
 
         if current_hhmm >= "08:00" and not _already_sent_summary(morning_key):
-            print(f"[SCHEDULER] Catch-up do resumo da manhã acionado no startup | now={now}")
+            print(
+                f"[SCHEDULER] Catch-up do resumo da manhã acionado no startup | now={now}"
+            )
             job_send_morning_summary()
             ran_morning = True
 
-        if current_hhmm >= "12:00" and not _already_sent_summary(_partial_summary_key("morning")):
-            print(f"[SCHEDULER] Catch-up da parcial da manhã acionado no startup | now={now}")
-            job_send_morning_partial_summary()
-
         if current_hhmm >= "12:30" and not _already_sent_summary(afternoon_key):
-            print(f"[SCHEDULER] Catch-up do resumo da tarde acionado no startup | now={now}")
+            print(
+                f"[SCHEDULER] Catch-up do resumo da tarde acionado no startup | now={now}"
+            )
             job_send_afternoon_summary()
             ran_afternoon = True
 
-        if current_hhmm >= "18:00" and not _already_sent_summary(_partial_summary_key("afternoon")):
-            print(f"[SCHEDULER] Catch-up da parcial da tarde acionado no startup | now={now}")
-            job_send_afternoon_partial_summary()
-
         if current_hhmm >= "18:00" and not _already_sent_summary(night_key):
-            print(f"[SCHEDULER] Catch-up do resumo da noite acionado no startup | now={now}")
+            print(
+                f"[SCHEDULER] Catch-up do resumo da noite acionado no startup | now={now}"
+            )
             job_send_night_summary()
             ran_night = True
-
-        if current_hhmm >= "23:59" and not _already_sent_summary(_partial_summary_key("night")):
-            print(f"[SCHEDULER] Catch-up da parcial da noite acionado no startup | now={now}")
-            job_send_night_partial_summary()
 
         job_preload_upcoming_predictions()
 
@@ -594,6 +588,7 @@ def run_missed_summaries_on_startup():
     except Exception as e:
         print(f"[SCHEDULER] Erro no catch-up de resumos no startup: {e}")
         _job_log_end("run_missed_summaries_on_startup", started, success=False)
+
 
 def _refresh_clv_for_pending_predictions():
     if not odds_service.is_available():
@@ -740,344 +735,4 @@ def job_check_results():
         return
 
     for item in updates:
-        try:
-            fixture_id = str(item.get("fixture_id", "")).strip()
-            result_key = build_result_key(fixture_id)
-
-            if _already_sent_result(result_key):
-                print(f"[SCHEDULER] Resultado já enviado anteriormente: {fixture_id}")
-                continue
-
-            ai_summary = gemini_summary.build_result_summary(item)
-            caption = format_result_message(item, ai_summary=ai_summary)
-            photo_url = pick_winner_photo_url(item)
-
-            if photo_url:
-                result = telegram.send_photo(photo_url, caption=caption)
-            else:
-                result = telegram.send_message(caption)
-
-            print(f"[SCHEDULER] Retorno Telegram: {result}")
-
-            if result.get("ok"):
-                _save_sent_result(result_key)
-                sent_count += 1
-                print(
-                    f"[SCHEDULER] Resultado enviado com sucesso: "
-                    f"{item['home_team']} x {item['away_team']} | {item['status']}"
-                )
-            else:
-                print(f"[SCHEDULER] Falha ao enviar resultado: {result}")
-
-        except Exception as e:
-            print(f"[SCHEDULER] Erro no envio de resultado: {e}")
-
-    _job_log_end(
-        "job_check_results",
-        started,
-        success=True,
-        updated=updated_count,
-        sent=sent_count,
-    )
-
-
-def job_monitor_live_matches():
-    started = _job_log_start("job_monitor_live_matches")
-
-    runtime = _runtime_config()
-    live_enabled = bool(
-        runtime.get("live_monitor_enabled", settings.live_monitor_enabled)
-    )
-
-    if not live_enabled:
-        print("[LIVE] Monitor live desativado por configuração.")
-        _job_log_end("job_monitor_live_matches", started, success=True, skipped=True)
-        return
-
-    print(f"[LIVE] Rodando monitor live: {now_local()}")
-    try:
-        live_monitor.monitor_live_matches()
-        _job_log_end("job_monitor_live_matches", started, success=True)
-    except Exception as e:
-        print(f"[LIVE] Erro geral no monitor live: {e}")
-        _job_log_end("job_monitor_live_matches", started, success=False)
-
-
-def execute_training_job(trigger: str = "manual"):
-    global training_job_running
-
-    started = _job_log_start(f"training_job:{trigger}")
-
-    if training_job_running:
-        message = "Já existe um treino em andamento."
-        print(f"[TRAINING] {message}")
-        _job_log_end(
-            f"training_job:{trigger}",
-            started,
-            success=False,
-            skipped=True,
-            reason="already_running",
-        )
-        return {
-            "success": False,
-            "skipped": True,
-            "message": message,
-            "trigger": trigger,
-        }
-
-    training_job_running = True
-
-    try:
-        print(f"[TRAINING] Rodando treino ({trigger}): {now_local()}")
-
-        added = training_dataset_service.append_resolved_predictions_to_dataset()
-        print(f"[TRAINING] Dataset atualizado | novas linhas líquidas={added}")
-
-        train_result = ml_training_service.train()
-
-        result = {
-            "success": True,
-            "skipped": False,
-            "trigger": trigger,
-            "added": added,
-            "train_result": train_result,
-            "message": "Treino executado com sucesso.",
-            "executed_at": now_local().isoformat(),
-        }
-
-        print(f"[TRAINING] Treino ({trigger}) concluído com sucesso.")
-        _job_log_end(
-            f"training_job:{trigger}",
-            started,
-            success=True,
-            added=added,
-        )
-        return result
-
-    except Exception as e:
-        print(f"[TRAINING] Erro no treino ({trigger}): {e}")
-        _job_log_end(
-            f"training_job:{trigger}",
-            started,
-            success=False,
-            error=str(e),
-        )
-        return {
-            "success": False,
-            "skipped": False,
-            "trigger": trigger,
-            "message": f"Erro ao executar treino: {e}",
-            "error": str(e),
-            "executed_at": now_local().isoformat(),
-        }
-
-    finally:
-        training_job_running = False
-
-
-def run_manual_training_job():
-    return execute_training_job(trigger="manual")
-
-
-def job_daily_training():
-    result = execute_training_job(trigger="scheduled")
-
-    if result.get("success"):
-        print("[TRAINING] Treino diário concluído com sucesso.")
-    elif result.get("skipped"):
-        print(f"[TRAINING] Treino diário ignorado: {result.get('message')}")
-    else:
-        print(f"[TRAINING] Erro no treino diário: {result.get('message')}")
-
-
-def run_today_audit():
-    started = _job_log_start("run_today_audit")
-    try:
-        updates = result_checker.check_pending_predictions()
-        _job_log_end("run_today_audit", started, success=True, updated=len(updates))
-        return {
-            "success": True,
-            "updated": len(updates),
-        }
-    except Exception as e:
-        print(f"[AUDIT] Erro na auditoria do dia: {e}")
-        _job_log_end("run_today_audit", started, success=False)
-        return {
-            "success": False,
-            "updated": 0,
-            "error": str(e),
-        }
-
-
-def start_scheduler():
-    global scheduler_started
-
-    if scheduler_started:
-        print("[SCHEDULER] Já iniciado, ignorando nova inicialização.")
-        return
-
-    removed_alerts = _cleanup_old_alert_keys()
-    if removed_alerts:
-        print(f"[SCHEDULER] Chaves antigas de alerta removidas no startup: {removed_alerts}")
-
-    runtime = _runtime_config()
-    live_enabled = bool(
-        runtime.get("live_monitor_enabled", settings.live_monitor_enabled)
-    )
-    live_interval_seconds = int(
-        runtime.get(
-            "live_monitor_interval_seconds",
-            settings.live_monitor_interval_seconds,
-        )
-    )
-
-    scheduler.add_job(
-        job_send_morning_summary,
-        "cron",
-        hour=8,
-        minute=0,
-        id="job_send_morning_summary",
-        replace_existing=True,
-        max_instances=1,
-        coalesce=True,
-        misfire_grace_time=2400,
-    )
-
-    scheduler.add_job(
-        job_send_afternoon_summary,
-        "cron",
-        hour=12,
-        minute=30,
-        id="job_send_afternoon_summary",
-        replace_existing=True,
-        max_instances=1,
-        coalesce=True,
-        misfire_grace_time=2400,
-    )
-
-    scheduler.add_job(
-        job_send_night_summary,
-        "cron",
-        hour=18,
-        minute=0,
-        id="job_send_night_summary",
-        replace_existing=True,
-        max_instances=1,
-        coalesce=True,
-        misfire_grace_time=2400,
-    )
-
-    scheduler.add_job(
-        job_send_morning_partial_summary,
-        "cron",
-        hour=12,
-        minute=0,
-        id="job_send_morning_partial_summary",
-        replace_existing=True,
-        max_instances=1,
-        coalesce=True,
-        misfire_grace_time=1800,
-    )
-
-    scheduler.add_job(
-        job_send_afternoon_partial_summary,
-        "cron",
-        hour=18,
-        minute=0,
-        id="job_send_afternoon_partial_summary",
-        replace_existing=True,
-        max_instances=1,
-        coalesce=True,
-        misfire_grace_time=1800,
-    )
-
-    scheduler.add_job(
-        job_send_night_partial_summary,
-        "cron",
-        hour=23,
-        minute=59,
-        id="job_send_night_partial_summary",
-        replace_existing=True,
-        max_instances=1,
-        coalesce=True,
-        misfire_grace_time=1800,
-    )
-
-    scheduler.add_job(
-        job_preload_upcoming_predictions,
-        "interval",
-        hours=6,
-        id="job_preload_upcoming_predictions",
-        replace_existing=True,
-        max_instances=1,
-        coalesce=True,
-        misfire_grace_time=600,
-    )
-
-    scheduler.add_job(
-        job_daily_training,
-        "cron",
-        hour=0,
-        minute=0,
-        id="job_daily_training",
-        replace_existing=True,
-        max_instances=1,
-        coalesce=True,
-        misfire_grace_time=600,
-    )
-
-    scheduler.add_job(
-        job_check_games,
-        "interval",
-        minutes=1,
-        id="job_check_games",
-        replace_existing=True,
-        max_instances=1,
-        coalesce=True,
-        misfire_grace_time=30,
-    )
-
-    scheduler.add_job(
-        job_check_results,
-        "interval",
-        minutes=15,
-        id="job_check_results",
-        replace_existing=True,
-        max_instances=1,
-        coalesce=True,
-        misfire_grace_time=120,
-    )
-
-    scheduler.add_job(
-        run_today_audit,
-        "cron",
-        hour=23,
-        minute=55,
-        id="run_today_audit",
-        replace_existing=True,
-        max_instances=1,
-        coalesce=True,
-        misfire_grace_time=300,
-    )
-
-    if live_enabled:
-        scheduler.add_job(
-            job_monitor_live_matches,
-            "interval",
-            seconds=live_interval_seconds,
-            id="job_monitor_live_matches",
-            replace_existing=True,
-            max_instances=1,
-            coalesce=True,
-            misfire_grace_time=30,
-        )
-
-    scheduler.start()
-    scheduler_started = True
-
-
-    print("[SCHEDULER] Iniciado com sucesso.")
-    print("[SCHEDULER] Aguardando primeiro ciclo automático dos jobs...")
-
-    if live_enabled:
-        print("[SCHEDULER] Monitor live habilitado e aguardando próximo ciclo normal.")
+     

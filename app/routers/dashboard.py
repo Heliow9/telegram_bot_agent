@@ -110,9 +110,38 @@ def _estimate_effective_ml_weight(metadata: dict) -> float:
     return round(min(max(weight, 0.0), 0.65), 4)
 
 
-def _serialize_prediction(prediction: Prediction):
-    odds = getattr(prediction, "odds", None)
+def _fair_odds_for_prediction(prediction: Prediction):
+    odds = prediction.odds
+    if not odds:
+        return None
+    pick = str(prediction.pick or "").upper()
+    return {
+        "1": odds.fair_home_odds,
+        "X": odds.fair_draw_odds,
+        "2": odds.fair_away_odds,
+        "1X": odds.fair_odds_1x,
+        "X2": odds.fair_odds_x2,
+        "12": odds.fair_odds_12,
+    }.get(pick)
 
+
+def _odds_movement(prediction: Prediction):
+    odds = prediction.odds
+    if not odds or odds.opening_market_odds is None or odds.latest_market_odds is None:
+        return None
+    try:
+        return round(float(odds.latest_market_odds) - float(odds.opening_market_odds), 2)
+    except Exception:
+        return None
+
+
+def _odds_movement_direction(prediction: Prediction):
+    movement = _odds_movement(prediction)
+    if movement is None or movement == 0:
+        return "stable"
+    return "up" if movement > 0 else "down"
+
+def _serialize_prediction(prediction: Prediction):
     return {
         "id": prediction.id,
         "fixture_id": prediction.fixture_id,
@@ -150,11 +179,14 @@ def _serialize_prediction(prediction: Prediction):
         "result_source": prediction.result_source,
         "last_status_text": prediction.last_status_text,
         "is_live": prediction.is_live,
-        "opening_market_odds": odds.opening_market_odds if odds else None,
-        "latest_market_odds": odds.latest_market_odds if odds else None,
-        "edge": odds.edge if odds else None,
-        "has_value_bet": odds.has_value_bet if odds else False,
-        "bookmaker": odds.bookmaker if odds else None,
+        "bookmaker": prediction.odds.bookmaker if prediction.odds else None,
+        "opening_market_odds": prediction.odds.opening_market_odds if prediction.odds else None,
+        "latest_market_odds": prediction.odds.latest_market_odds if prediction.odds else None,
+        "edge": prediction.odds.edge if prediction.odds else None,
+        "has_value_bet": bool(prediction.odds.has_value_bet) if prediction.odds else False,
+        "fair_odds": _fair_odds_for_prediction(prediction),
+        "movement": _odds_movement(prediction),
+        "movement_direction": _odds_movement_direction(prediction),
     }
 
 
@@ -580,11 +612,6 @@ def market_overview(
                 "movement": movement,
                 "movement_direction": movement_direction,
                 "is_live": prediction.is_live,
-        "opening_market_odds": odds.opening_market_odds if odds else None,
-        "latest_market_odds": odds.latest_market_odds if odds else None,
-        "edge": odds.edge if odds else None,
-        "has_value_bet": odds.has_value_bet if odds else False,
-        "bookmaker": odds.bookmaker if odds else None,
                 "created_at": prediction.created_at.isoformat() if prediction.created_at else None,
                 "checked_at": prediction.checked_at.isoformat() if prediction.checked_at else None,
                 "started_at": prediction.started_at.isoformat() if prediction.started_at else None,

@@ -104,12 +104,11 @@ def start_background_jobs() -> None:
         return
 
     def run():
-        logger.info("Executando treino inicial antes dos jobs...")
-        training_result = execute_training_job(trigger="startup")
-        logger.info("Treino inicial finalizado | success=%s", training_result.get("success"))
+        execute_training_job(trigger="startup")
         safe_start_scheduler()
         safe_run_post_deploy_sync()
         safe_run_startup_summary_recovery()
+
     thread = threading.Thread(target=run, name="botbet-background-jobs", daemon=True)
     thread.start()
 

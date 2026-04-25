@@ -200,8 +200,8 @@ class DailyLeaguesService:
             return (
                 filter_events_starting_in_30_minutes(
                     events,
-                    min_minutes=28,
-                    max_minutes=31,
+                    min_minutes=29,
+                    max_minutes=35,
                 ),
                 "Janela 30min",
             )

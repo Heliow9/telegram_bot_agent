@@ -61,9 +61,18 @@ class PredictionOut(BaseModel):
     match_date: str
     match_time: str
     pick: str
+    market_type: Optional[str] = None
+    main_market_pick: Optional[str] = None
+    double_chance_pick: Optional[str] = None
     prob_home: float
     prob_draw: float
     prob_away: float
+    prob_1x: Optional[float] = None
+    prob_x2: Optional[float] = None
+    prob_12: Optional[float] = None
+    main_market_probability: Optional[float] = None
+    double_chance_probability: Optional[float] = None
+    best_probability: Optional[float] = None
     confidence: str
     model_source: Optional[str] = None
     status: str
@@ -81,6 +90,14 @@ class PredictionOut(BaseModel):
     result_source: Optional[str] = None
     last_status_text: Optional[str] = None
     is_live: bool = False
+    bookmaker: Optional[str] = None
+    opening_market_odds: Optional[float] = None
+    latest_market_odds: Optional[float] = None
+    edge: Optional[float] = None
+    has_value_bet: bool = False
+    fair_odds: Optional[float] = None
+    movement: Optional[float] = None
+    movement_direction: Optional[str] = None
 
     class Config:
         from_attributes = True
