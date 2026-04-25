@@ -18,8 +18,10 @@ from app.services.scheduler_service import (
 
 
 class PostDeploySyncService:
-    STARTUP_ALERT_WINDOW_MIN = -10
-    STARTUP_ALERT_WINDOW_MAX = 35
+    # No startup/deploy o bot deve recuperar TODOS os palpites do dia ainda não enviados.
+    # A janela de 30 minutos fica apenas para o job recorrente.
+    STARTUP_ALERT_WINDOW_MIN = None
+    STARTUP_ALERT_WINDOW_MAX = None
 
     def __init__(self):
         self.daily_service = DailyLeaguesService()
@@ -104,29 +106,15 @@ class PostDeploySyncService:
         return int(delta.total_seconds() // 60)
 
     def _should_send_startup_alert(self, payload: Dict) -> bool:
+        """No deploy/restart, recupera os palpites do dia sem limitar pela janela de 30 minutos."""
         minutes_to_kickoff = self._minutes_to_kickoff(payload)
-
-        if minutes_to_kickoff is None:
-            print(
-                f"[POST_DEPLOY_SYNC] Sem horário válido para avaliar alerta startup | "
-                f"fixture_id={self._fixture_id(payload)} | jogo={self._fixture_label(payload)}"
-            )
-            return False
-
-        should_send = (
-            self.STARTUP_ALERT_WINDOW_MIN
-            <= minutes_to_kickoff
-            <= self.STARTUP_ALERT_WINDOW_MAX
-        )
-
         print(
-            f"[POST_DEPLOY_SYNC] Janela startup | "
+            f"[POST_DEPLOY_SYNC] Recuperação startup elegível | "
             f"fixture_id={self._fixture_id(payload)} | "
             f"jogo={self._fixture_label(payload)} | "
-            f"minutes_to_kickoff={minutes_to_kickoff} | "
-            f"send={should_send}"
+            f"minutes_to_kickoff={minutes_to_kickoff}"
         )
-        return should_send
+        return True
 
     def _deduplicate_payloads(self, payloads: List[Dict]) -> List[Dict]:
         unique: List[Dict] = []
@@ -248,16 +236,9 @@ class PostDeploySyncService:
             startup_alert_key = self._build_startup_alert_key(fixture_id)
             regular_alert_key = build_alert_key(fixture_id)
 
-            if _already_sent_alert(startup_alert_key):
+            if _already_sent_alert(startup_alert_key) or _already_sent_alert(regular_alert_key):
                 print(
-                    f"[POST_DEPLOY_SYNC] Alerta startup já existia, não reenviado | "
-                    f"fixture_id={fixture_id} | jogo={home_team} x {away_team}"
-                )
-                continue
-
-            if _already_sent_alert(regular_alert_key):
-                print(
-                    f"[POST_DEPLOY_SYNC] Alerta normal de 30min já havia sido enviado | "
+                    f"[POST_DEPLOY_SYNC] Alerta já enviado, não reenviado | "
                     f"fixture_id={fixture_id} | jogo={home_team} x {away_team}"
                 )
                 continue
@@ -268,6 +249,7 @@ class PostDeploySyncService:
 
                 if result.get("ok"):
                     _save_sent_alert(startup_alert_key)
+                    _save_sent_alert(regular_alert_key)
                     sent += 1
                     print(
                         f"[POST_DEPLOY_SYNC] Alerta startup enviado com sucesso | "
