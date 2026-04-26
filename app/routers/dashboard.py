@@ -441,7 +441,7 @@ def list_predictions(
     total = query.count()
 
     rows = (
-        query.order_by(Prediction.created_at.desc())
+        query.order_by(Prediction.match_date.asc(), Prediction.match_time.asc(), Prediction.created_at.desc())
         .offset(offset)
         .limit(limit)
         .all()

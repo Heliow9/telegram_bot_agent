@@ -1,5 +1,6 @@
 from typing import Dict, List, Optional, Tuple
 
+from app.services.time_utils import event_payload_to_local_datetime
 from app.services.sportsdb_api import SportsDBAPI
 from app.services.predictor import (
     extract_team_form,
@@ -261,6 +262,10 @@ class AnalysisService:
             decision_payload["value_bet"] = aligned_value_bet
         decision_payload["historical_tuning"] = historical_context["reliability"]
 
+        kickoff_local = event_payload_to_local_datetime(match)
+        local_date = kickoff_local.strftime("%Y-%m-%d") if kickoff_local else (match.get("dateEventLocal") or match.get("dateEvent", ""))
+        local_time = kickoff_local.strftime("%H:%M:%S") if kickoff_local else (match.get("strTimeLocal") or match.get("strTime", ""))
+
         return {
             "league": league_meta,
             "fixture": {
@@ -270,6 +275,9 @@ class AnalysisService:
                 "away_team": away_team,
                 "date": match.get("dateEvent", ""),
                 "time": match.get("strTime", ""),
+                "local_date": local_date,
+                "local_time": local_time,
+                "kickoff_local": kickoff_local.isoformat() if kickoff_local else None,
                 "id": match.get("idEvent", ""),
             },
             "analysis": decision_payload,

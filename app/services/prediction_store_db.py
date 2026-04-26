@@ -112,6 +112,8 @@ def save_prediction_db(payload: dict):
         if existing:
             print(f"[DB] Prediction já existe para fixture_id={fixture_id}")
 
+            existing.match_date = fixture.get("local_date") or fixture.get("date") or existing.match_date
+            existing.match_time = fixture.get("local_time") or fixture.get("time") or existing.match_time
             existing.pick = pick or existing.pick
             existing.market_type = market_type or existing.market_type
             existing.main_market_pick = _normalize_pick(
@@ -208,14 +210,17 @@ def save_prediction_db(payload: dict):
             f"pick={pick} | market_type={market_type}"
         )
 
+        local_match_date = fixture.get("local_date") or fixture.get("date")
+        local_match_time = fixture.get("local_time") or fixture.get("time")
+
         prediction = Prediction(
             fixture_id=fixture_id,
             league_key=league.get("key"),
             league_name=league.get("display_name"),
             home_team=fixture.get("home_team"),
             away_team=fixture.get("away_team"),
-            match_date=fixture.get("date"),
-            match_time=fixture.get("time"),
+            match_date=local_match_date,
+            match_time=local_match_time,
             pick=pick,
             market_type=market_type,
             main_market_pick=_normalize_pick(

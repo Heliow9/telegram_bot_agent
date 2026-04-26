@@ -376,10 +376,10 @@ def _send_ranked_summary(payloads: list[dict], period_label: str):
 
 
 def _preload_turn_payloads(payloads: list[dict], period_label: str):
-    """Persiste palpites do turno para dashboard sem enviar palpites no Telegram."""
-    _persist_payloads(payloads, f"preload_{period_label}")
+    """Persiste palpites do turno para dashboard e envia a grade consolidada no Telegram."""
+    _send_ranked_summary(payloads, period_label)
     print(
-        f"[SCHEDULER] Preload do turno concluído sem envio Telegram | "
+        f"[SCHEDULER] Grade do turno enviada e persistida | "
         f"periodo={period_label} | payloads={len(payloads)}"
     )
 
@@ -555,7 +555,7 @@ def run_missed_summaries_on_startup():
             print(f"[SCHEDULER] Catch-up da parcial da manhã acionado no startup | now={now}")
             job_send_morning_partial_summary()
 
-        if current_hhmm >= "12:30" and not _already_sent_summary(afternoon_key):
+        if current_hhmm >= "12:00" and not _already_sent_summary(afternoon_key):
             print(f"[SCHEDULER] Catch-up do resumo da tarde acionado no startup | now={now}")
             job_send_afternoon_summary()
             ran_afternoon = True
@@ -943,7 +943,7 @@ def start_scheduler():
         job_send_afternoon_summary,
         "cron",
         hour=12,
-        minute=30,
+        minute=0,
         id="job_send_afternoon_summary",
         replace_existing=True,
         max_instances=1,
