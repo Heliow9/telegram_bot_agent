@@ -10,6 +10,7 @@ from app.services.prediction_store import (
 from app.services.result_checker_service import ResultCheckerService
 from app.services.telegram_service import TelegramService
 from app.services.message_formatter import format_prediction_message
+from app.services.time_utils import event_payload_to_local_datetime
 from app.services.scheduler_service import (
     _already_sent_alert,
     _save_sent_alert,
@@ -18,10 +19,10 @@ from app.services.scheduler_service import (
 
 
 class PostDeploySyncService:
-    # No startup/deploy o bot deve recuperar TODOS os palpites do dia ainda não enviados.
-    # A janela de 30 minutos fica apenas para o job recorrente.
-    STARTUP_ALERT_WINDOW_MIN = None
-    STARTUP_ALERT_WINDOW_MAX = None
+    # No startup/deploy o bot deve persistir os jogos do dia, mas NÃO pode disparar análises pré-jogo futuras.
+    # O alerta individual só é permitido na regra T-30: entre 29 e 31 minutos antes do kickoff.
+    STARTUP_ALERT_WINDOW_MIN = 29
+    STARTUP_ALERT_WINDOW_MAX = 31
 
     def __init__(self):
         self.daily_service = DailyLeaguesService()
@@ -40,11 +41,11 @@ class PostDeploySyncService:
 
     def _fixture_date(self, payload: Dict) -> str:
         fixture = payload.get("fixture") or {}
-        return str(fixture.get("date") or "").strip()
+        return str(fixture.get("local_date") or fixture.get("date") or "").strip()
 
     def _fixture_time(self, payload: Dict) -> str:
         fixture = payload.get("fixture") or {}
-        return str(fixture.get("time") or "").strip()
+        return str(fixture.get("local_time") or fixture.get("time") or "").strip()
 
     def _fixture_id(self, payload: Dict) -> str:
         fixture = payload.get("fixture") or {}
@@ -106,15 +107,19 @@ class PostDeploySyncService:
         return int(delta.total_seconds() // 60)
 
     def _should_send_startup_alert(self, payload: Dict) -> bool:
-        """No deploy/restart, recupera os palpites do dia sem limitar pela janela de 30 minutos."""
+        """Permite alerta no startup somente se o jogo estiver exatamente na janela T-30."""
         minutes_to_kickoff = self._minutes_to_kickoff(payload)
+        eligible = (
+            minutes_to_kickoff is not None
+            and self.STARTUP_ALERT_WINDOW_MIN <= minutes_to_kickoff <= self.STARTUP_ALERT_WINDOW_MAX
+        )
         print(
-            f"[POST_DEPLOY_SYNC] Recuperação startup elegível | "
+            f"[POST_DEPLOY_SYNC] Checando alerta startup T-30 | "
             f"fixture_id={self._fixture_id(payload)} | "
             f"jogo={self._fixture_label(payload)} | "
-            f"minutes_to_kickoff={minutes_to_kickoff}"
+            f"minutes_to_kickoff={minutes_to_kickoff} | eligible={eligible}"
         )
-        return True
+        return eligible
 
     def _deduplicate_payloads(self, payloads: List[Dict]) -> List[Dict]:
         unique: List[Dict] = []

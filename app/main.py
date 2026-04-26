@@ -105,9 +105,13 @@ def start_background_jobs() -> None:
 
     def run():
         execute_training_job(trigger="startup")
-        safe_start_scheduler()
+        # Ordem importante:
+        # 1) sincroniza/persiste os jogos sem disparar análises futuras;
+        # 2) recupera a grade do turno que já deveria ter saído;
+        # 3) inicia o scheduler para os próximos horários.
         safe_run_post_deploy_sync()
         safe_run_startup_summary_recovery()
+        safe_start_scheduler()
 
     thread = threading.Thread(target=run, name="botbet-background-jobs", daemon=True)
     thread.start()
