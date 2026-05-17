@@ -529,12 +529,10 @@ def job_send_night_summary():
 def job_preload_upcoming_predictions():
     started = _job_log_start("job_preload_upcoming_predictions")
     try:
-        today = now_local().strftime("%Y-%m-%d")
-        tomorrow = (now_local() + timedelta(days=1)).strftime("%Y-%m-%d")
-
-        payloads_today = daily_service.get_all_day_payloads(today)
-        payloads_tomorrow = daily_service.get_all_day_payloads(tomorrow)
-        combined = payloads_today + payloads_tomorrow
+        # Janela móvel future-only: melhora o radar e evita depender de uma
+        # data exata quando a fonte externa usa UTC/local de formas diferentes.
+        hours = 48
+        combined = daily_service.get_upcoming_payloads(hours=hours)
 
         if not combined:
             _job_log_end(
@@ -542,17 +540,17 @@ def job_preload_upcoming_predictions():
                 started,
                 success=True,
                 payloads=0,
-                dates=[today, tomorrow],
+                window_hours=hours,
             )
             return
 
-        _persist_payloads(combined, f"preload_upcoming:{today},{tomorrow}")
+        _persist_payloads(combined, f"preload_upcoming:{hours}h")
         _job_log_end(
             "job_preload_upcoming_predictions",
             started,
             success=True,
             payloads=len(combined),
-            dates=[today, tomorrow],
+            window_hours=hours,
         )
     except Exception as e:
         print(f"[SCHEDULER] Erro no preload de previsões futuras: {e}")

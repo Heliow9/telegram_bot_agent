@@ -278,6 +278,21 @@ class SportsDBAPI:
             },
         )
 
+    def events_by_day_sport(self, date_str: str, sport: str = "Soccer") -> Dict[str, Any]:
+        """Busca todos os eventos de um esporte em uma data.
+
+        Esse fallback é importante porque o endpoint eventsday pode retornar vazio
+        quando o nome da liga não bate exatamente com o catálogo da TheSportsDB.
+        Depois filtramos localmente por id/nome da liga.
+        """
+        return self._get(
+            "eventsday.php",
+            {
+                "d": date_str,
+                "s": sport,
+            },
+        )
+
     def next_events_by_league_id(self, league_id: str) -> Dict[str, Any]:
         return self._get(
             "eventsnextleague.php",
@@ -338,6 +353,10 @@ class SportsDBAPI:
 
     def get_events_by_day_list(self, date_str: str, league_name: str) -> List[Dict[str, Any]]:
         data = self.events_by_day(date_str, league_name)
+        return self.get_events_list(data)
+
+    def get_events_by_day_sport_list(self, date_str: str, sport: str = "Soccer") -> List[Dict[str, Any]]:
+        data = self.events_by_day_sport(date_str, sport=sport)
         return self.get_events_list(data)
 
     def get_next_events_by_league_list(self, league_id: str) -> List[Dict[str, Any]]:
