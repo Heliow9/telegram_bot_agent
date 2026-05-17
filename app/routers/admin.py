@@ -44,3 +44,28 @@ def run_post_deploy_sync(current_user=Depends(get_current_user)):
         "message": "Sincronização pós-deploy executada com sucesso.",
         "result": result,
     }
+
+# Aliases compatíveis com diferentes versões da dashboard.
+@router.post("/run-prelive")
+def run_prelive_alias(current_user=Depends(get_current_user)):
+    return run_pre_game_check(current_user=current_user)
+
+
+@router.post("/run-pre-analysis")
+def run_pre_analysis_alias(current_user=Depends(get_current_user)):
+    return run_pre_game_check(current_user=current_user)
+
+
+@router.post("/check-results")
+def check_results_alias(current_user=Depends(get_current_user)):
+    return run_results_check(current_user=current_user)
+
+
+@router.post("/audit-today")
+def audit_today_alias(current_user=Depends(get_current_user)):
+    return run_today_audit_route(current_user=current_user)
+
+
+@router.post("/post-deploy-sync")
+def post_deploy_sync_alias(current_user=Depends(get_current_user)):
+    return run_post_deploy_sync(current_user=current_user)

@@ -34,15 +34,19 @@ def _filter_by_turn(events: List[Dict], start_hour: int, end_hour: int, future_o
 
 
 def filter_morning_events(events: List[Dict]) -> List[Dict]:
-    return _filter_by_turn(events, 8, 11, future_only=False)
+    # A grade do turno nunca deve incluir jogos já iniciados/finalizados.
+    # Isso evita envio atrasado de palpites antigos após restart/deploy.
+    return _filter_by_turn(events, 8, 11, future_only=True)
 
 
 def filter_afternoon_events(events: List[Dict]) -> List[Dict]:
-    return _filter_by_turn(events, 12, 17, future_only=False)
+    # A grade do turno nunca deve incluir jogos já iniciados/finalizados.
+    return _filter_by_turn(events, 12, 17, future_only=True)
 
 
 def filter_night_events(events: List[Dict]) -> List[Dict]:
-    return _filter_by_turn(events, 18, 23, future_only=False)
+    # A grade do turno nunca deve incluir jogos já iniciados/finalizados.
+    return _filter_by_turn(events, 18, 23, future_only=True)
 
 
 def filter_events_starting_in_30_minutes(

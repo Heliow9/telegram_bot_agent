@@ -33,6 +33,122 @@ def _utc_naive_day_bounds():
     return start_utc_naive, end_utc_naive
 
 
+def _safe_float(value):
+    try:
+        if value is None or value == "":
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_match_datetime_local(prediction: Prediction):
+    """
+    Converte match_date/match_time em datetime local.
+    O banco guarda esses campos como string, então o dashboard precisa ser defensivo.
+    """
+    tz = ZoneInfo(settings.timezone)
+    raw_date = str(prediction.match_date or "").strip()
+    raw_time = str(prediction.match_time or "00:00").strip()
+
+    if not raw_date:
+        return None
+
+    if len(raw_time) >= 5:
+        raw_time = raw_time[:5]
+    elif not raw_time:
+        raw_time = "00:00"
+
+    candidates = [
+        f"{raw_date} {raw_time}",
+        f"{raw_date}T{raw_time}",
+    ]
+
+    formats = [
+        "%Y-%m-%d %H:%M",
+        "%d/%m/%Y %H:%M",
+        "%Y/%m/%d %H:%M",
+        "%d-%m-%Y %H:%M",
+        "%Y-%m-%dT%H:%M",
+    ]
+
+    for candidate in candidates:
+        for fmt in formats:
+            try:
+                return datetime.strptime(candidate, fmt).replace(tzinfo=tz)
+            except ValueError:
+                continue
+
+    try:
+        parsed = datetime.fromisoformat(f"{raw_date}T{raw_time}")
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=tz)
+        return parsed.astimezone(tz)
+    except Exception:
+        return None
+
+
+def _is_finished_or_resolved(prediction: Prediction) -> bool:
+    status = str(prediction.status or "").strip().lower()
+    last_status = str(prediction.last_status_text or "").strip().lower()
+
+    resolved_statuses = {"hit", "miss", "finished", "closed", "resolved", "cancelled", "canceled"}
+    finished_markers = ("finished", "match finished", "full time", "ft", "encerrado", "finalizado")
+
+    return (
+        status in resolved_statuses
+        or prediction.finished_at is not None
+        or any(marker in last_status for marker in finished_markers)
+    )
+
+
+def _prediction_probability(prediction: Prediction) -> float:
+    for value in (
+        prediction.best_probability,
+        prediction.double_chance_probability,
+        prediction.main_market_probability,
+        prediction.prob_home,
+        prediction.prob_draw,
+        prediction.prob_away,
+    ):
+        parsed = _safe_float(value)
+        if parsed is not None and parsed > 0:
+            return parsed
+    return 0.0
+
+
+def _prediction_current_odd(prediction: Prediction):
+    odds = prediction.odds
+    if not odds:
+        return None
+    for value in (odds.latest_market_odds, odds.opening_market_odds):
+        parsed = _safe_float(value)
+        if parsed is not None and parsed > 1:
+            return parsed
+    return None
+
+
+def _confidence_score(confidence: str | None) -> float:
+    normalized = str(confidence or "").strip().lower()
+    if normalized in {"alta", "high", "forte"}:
+        return 1.0
+    if normalized in {"média", "media", "medium", "moderada"}:
+        return 0.62
+    if normalized in {"baixa", "low"}:
+        return 0.35
+    return 0.45
+
+
+def _opportunity_score(prediction: Prediction) -> float:
+    probability = _prediction_probability(prediction)
+    edge = max(_safe_float(prediction.odds.edge if prediction.odds else None) or 0.0, 0.0)
+    confidence = _confidence_score(prediction.confidence)
+    value_bonus = 0.08 if prediction.odds and prediction.odds.has_value_bet else 0.0
+    live_bonus = 0.05 if prediction.is_live else 0.0
+    score = probability * 0.48 + min(edge, 0.30) * 0.27 + confidence * 0.17 + value_bonus + live_bonus
+    return round(max(0.0, min(score, 1.0)), 4)
+
+
 def _calculate_profit(status: str, opening_odds):
     if opening_odds is None:
         return None
@@ -627,6 +743,88 @@ def market_overview(
     return {
         "items": items,
         "total": total,
+    }
+
+
+@router.get("/opportunities")
+def list_opportunities(
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+    limit: int = Query(default=10, le=100),
+    hours: int = Query(default=24, ge=1, le=168),
+):
+    """
+    Radar de oportunidades future-only.
+
+    A dashboard usa este endpoint para montar o ranking operacional. Ele filtra
+    apenas partidas futuras, ainda pendentes, com probabilidade e odd válidas,
+    evitando mostrar jogos encerrados ou registros antigos do banco/cache.
+    """
+    tz = ZoneInfo(settings.timezone)
+    now_local = datetime.now(tz)
+    max_local = now_local + timedelta(hours=hours)
+
+    # Busca um volume maior e filtra em Python porque match_date/match_time
+    # são strings em formatos variados no banco legado.
+    candidates = (
+        db.query(Prediction)
+        .outerjoin(PredictionOdds, PredictionOdds.prediction_id == Prediction.id)
+        .filter(Prediction.status == "pending")
+        .order_by(Prediction.match_date.asc(), Prediction.match_time.asc(), Prediction.created_at.desc())
+        .limit(max(limit * 8, 80))
+        .all()
+    )
+
+    items = []
+
+    for prediction in candidates:
+        match_dt = _parse_match_datetime_local(prediction)
+        if not match_dt:
+            continue
+
+        if match_dt < now_local or match_dt > max_local:
+            continue
+
+        if _is_finished_or_resolved(prediction):
+            continue
+
+        probability = _prediction_probability(prediction)
+        odd = _prediction_current_odd(prediction)
+        edge = _safe_float(prediction.odds.edge if prediction.odds else None) or 0.0
+
+        # Sem esses dados o card vira 0%/odd "-" e confunde a operação.
+        if probability <= 0 or odd is None or odd <= 1:
+            continue
+
+        serialized = _serialize_prediction(prediction)
+        serialized["kickoff_at"] = match_dt.isoformat()
+        serialized["opportunity_probability"] = round(probability, 4)
+        serialized["opportunity_edge"] = round(edge, 4)
+        serialized["opportunity_odd"] = odd
+        serialized["opportunity_score"] = _opportunity_score(prediction)
+        serialized["is_future"] = True
+        items.append(serialized)
+
+    items.sort(
+        key=lambda item: (
+            item.get("opportunity_score") or 0,
+            item.get("opportunity_edge") or 0,
+            item.get("opportunity_probability") or 0,
+        ),
+        reverse=True,
+    )
+
+    return {
+        "items": items[:limit],
+        "total": len(items),
+        "filters": {
+            "future_only": True,
+            "status": "pending",
+            "hours": hours,
+            "min_probability": "> 0",
+            "valid_odd": True,
+        },
+        "generated_at": now_local.isoformat(),
     }
 
 

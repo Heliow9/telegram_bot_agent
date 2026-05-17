@@ -63,7 +63,7 @@ class Settings(BaseModel):
     value_bet_edge: float = float(os.getenv("VALUE_BET_EDGE", "0.05"))
 
     live_monitor_enabled: bool = _env_bool("LIVE_MONITOR_ENABLED", "true")
-    live_monitor_interval_seconds: int = int(os.getenv("LIVE_MONITOR_INTERVAL_SECONDS", "390"))
+    live_monitor_interval_seconds: int = int(os.getenv("LIVE_MONITOR_INTERVAL_SECONDS", "120"))
     live_minute_checkpoints: str = os.getenv("LIVE_MINUTE_CHECKPOINTS", "15,30,45,60,75")
     live_signal_min_shots_diff: int = int(os.getenv("LIVE_SIGNAL_MIN_SHOTS_DIFF", "4"))
     live_signal_min_on_target_diff: int = int(os.getenv("LIVE_SIGNAL_MIN_ON_TARGET_DIFF", "2"))

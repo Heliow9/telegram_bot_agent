@@ -21,8 +21,10 @@ from app.services.scheduler_service import (
 class PostDeploySyncService:
     # No startup/deploy o bot deve persistir os jogos do dia, mas NÃO pode disparar análises pré-jogo futuras.
     # O alerta individual só é permitido na regra T-30: entre 29 e 31 minutos antes do kickoff.
-    STARTUP_ALERT_WINDOW_MIN = 29
-    STARTUP_ALERT_WINDOW_MAX = 31
+    # No restart/deploy, se o bot voltar dentro da janela pré-live, ele ainda deve
+    # conseguir enviar. Janela estreita 29-31 min perdia jogos por atraso de API.
+    STARTUP_ALERT_WINDOW_MIN = 0
+    STARTUP_ALERT_WINDOW_MAX = 30
 
     def __init__(self):
         self.daily_service = DailyLeaguesService()
@@ -57,8 +59,9 @@ class PostDeploySyncService:
         away = fixture.get("away_team", "Fora")
         return f"{home} x {away}"
 
-    def _build_startup_alert_key(self, fixture_id: str) -> str:
-        return f"{fixture_id}_startup_sync"
+    def _build_startup_alert_key(self, fixture_id: str, fixture_date: str | None = None) -> str:
+        fixture_date = fixture_date or self._today()
+        return f"{fixture_date}_{fixture_id}_startup_sync"
 
     def _parse_fixture_datetime(self, payload: Dict) -> Optional[datetime]:
         fixture_date = self._fixture_date(payload)
@@ -238,7 +241,8 @@ class PostDeploySyncService:
                 )
                 continue
 
-            startup_alert_key = self._build_startup_alert_key(fixture_id)
+            fixture_date = self._fixture_date(payload) or self._today()
+            startup_alert_key = self._build_startup_alert_key(fixture_id, fixture_date)
             regular_alert_key = build_alert_key(fixture_id)
 
             if _already_sent_alert(startup_alert_key) or _already_sent_alert(regular_alert_key):

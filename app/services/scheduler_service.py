@@ -167,6 +167,39 @@ def _already_sent_summary(summary_key: str) -> bool:
     return summary_key in _load_sent_summaries()
 
 
+def _current_summary_turn(dt=None) -> str | None:
+    """Retorna somente o turno atual para catch-up seguro no startup.
+
+    Regra importante: após um deploy/restart, o bot não deve mandar grades antigas
+    de turnos já encerrados. Ele só pode recuperar a grade do turno atual, e os
+    filtros do event_selector já removem jogos iniciados/finalizados.
+    """
+    dt = dt or now_local()
+    hour = dt.hour
+    if 8 <= hour <= 11:
+        return "morning"
+    if 12 <= hour <= 17:
+        return "afternoon"
+    if 18 <= hour <= 23:
+        return "night"
+    return None
+
+
+def _send_summary_for_turn(turn: str):
+    if turn == "morning":
+        return job_send_morning_summary()
+    if turn == "afternoon":
+        return job_send_afternoon_summary()
+    if turn == "night":
+        return job_send_night_summary()
+    raise ValueError(f"Turno inválido: {turn}")
+
+
+def _turn_summary_key(turn: str, date_str: str | None = None) -> str:
+    date_str = date_str or now_local().strftime("%Y-%m-%d")
+    return f"{date_str}_{turn}"
+
+
 def _turn_bounds(turn: str):
     if turn == "morning":
         return 8, 11, "manhã"
@@ -271,8 +304,10 @@ def job_send_night_partial_summary():
     job_send_turn_partial_summary("night")
 
 
-def build_alert_key(fixture_id: str) -> str:
-    return f"{fixture_id}_30min"
+def build_alert_key(fixture_id: str, date_str: str | None = None) -> str:
+    # Inclui data para evitar colisão/reuso de id da API e facilitar limpeza diária.
+    date_str = date_str or now_local().strftime("%Y-%m-%d")
+    return f"{date_str}_{fixture_id}_30min"
 
 
 def build_result_key(fixture_id: str) -> str:
@@ -406,9 +441,8 @@ def job_send_morning_summary():
         return
 
     if not payloads:
-        print("[SCHEDULER] Nenhum jogo encontrado para manhã para preload.")
-        _save_sent_summary(summary_key)
-        _job_log_end("job_send_morning_summary", started, success=True, payloads=0)
+        print("[SCHEDULER] Nenhum jogo encontrado para manhã para preload. Vai tentar novamente no próximo ciclo/startup.")
+        _job_log_end("job_send_morning_summary", started, success=True, payloads=0, sent=False, retryable=True)
         return
 
     try:
@@ -442,9 +476,8 @@ def job_send_afternoon_summary():
         return
 
     if not payloads:
-        print("[SCHEDULER] Nenhum jogo encontrado para tarde para preload.")
-        _save_sent_summary(summary_key)
-        _job_log_end("job_send_afternoon_summary", started, success=True, payloads=0)
+        print("[SCHEDULER] Nenhum jogo encontrado para tarde para preload. Vai tentar novamente no próximo ciclo/startup.")
+        _job_log_end("job_send_afternoon_summary", started, success=True, payloads=0, sent=False, retryable=True)
         return
 
     try:
@@ -480,9 +513,8 @@ def job_send_night_summary():
         return
 
     if not payloads:
-        print("[SCHEDULER] Nenhum jogo encontrado para noite para preload.")
-        _save_sent_summary(summary_key)
-        _job_log_end("job_send_night_summary", started, success=True, payloads=0)
+        print("[SCHEDULER] Nenhum jogo encontrado para noite para preload. Vai tentar novamente no próximo ciclo/startup.")
+        _job_log_end("job_send_night_summary", started, success=True, payloads=0, sent=False, retryable=True)
         return
 
     try:
@@ -529,45 +561,48 @@ def job_preload_upcoming_predictions():
 
 def run_missed_summaries_on_startup():
     """
-    Garante envio das grades e parciais se a instância subir depois do horário programado.
+    Catch-up seguro após deploy/restart.
+
+    Antes, se o worker reiniciasse depois das 18:00, ele disparava manhã, tarde
+    e noite se as flags do dia não existissem. Isso enviava palpites de jogos já
+    concluídos. Agora só recupera a grade do turno atual e, mesmo assim, os
+    filtros dos turnos só aceitam jogos futuros.
     """
     started = _job_log_start("run_missed_summaries_on_startup")
 
     try:
         now = now_local()
-        current_hhmm = now.strftime("%H:%M")
         today_str = now.strftime("%Y-%m-%d")
+        current_turn = _current_summary_turn(now)
+        ran_turn = None
 
-        morning_key = f"{today_str}_morning"
-        afternoon_key = f"{today_str}_afternoon"
-        night_key = f"{today_str}_night"
+        if current_turn:
+            key = _turn_summary_key(current_turn, today_str)
+            if not _already_sent_summary(key):
+                print(
+                    f"[SCHEDULER] Catch-up seguro do turno atual acionado no startup | "
+                    f"turn={current_turn} | now={now}"
+                )
+                _send_summary_for_turn(current_turn)
+                ran_turn = current_turn
+            else:
+                print(
+                    f"[SCHEDULER] Catch-up ignorado: grade do turno atual já enviada | "
+                    f"turn={current_turn} | key={key}"
+                )
+        else:
+            print(f"[SCHEDULER] Catch-up de grades ignorado fora dos turnos | now={now}")
 
-        ran_morning = False
-        ran_afternoon = False
-        ran_night = False
-
-        if current_hhmm >= "08:00" and not _already_sent_summary(morning_key):
-            print(f"[SCHEDULER] Catch-up do resumo da manhã acionado no startup | now={now}")
-            job_send_morning_summary()
-            ran_morning = True
-
+        # Parciais de turnos encerrados podem continuar, pois são resumo de desempenho,
+        # não palpites pré-jogo. Só enviam se houver previsões persistidas.
+        current_hhmm = now.strftime("%H:%M")
         if current_hhmm >= "12:00" and not _already_sent_summary(_partial_summary_key("morning")):
             print(f"[SCHEDULER] Catch-up da parcial da manhã acionado no startup | now={now}")
             job_send_morning_partial_summary()
 
-        if current_hhmm >= "12:00" and not _already_sent_summary(afternoon_key):
-            print(f"[SCHEDULER] Catch-up do resumo da tarde acionado no startup | now={now}")
-            job_send_afternoon_summary()
-            ran_afternoon = True
-
         if current_hhmm >= "18:00" and not _already_sent_summary(_partial_summary_key("afternoon")):
             print(f"[SCHEDULER] Catch-up da parcial da tarde acionado no startup | now={now}")
             job_send_afternoon_partial_summary()
-
-        if current_hhmm >= "18:00" and not _already_sent_summary(night_key):
-            print(f"[SCHEDULER] Catch-up do resumo da noite acionado no startup | now={now}")
-            job_send_night_summary()
-            ran_night = True
 
         if current_hhmm >= "23:59" and not _already_sent_summary(_partial_summary_key("night")):
             print(f"[SCHEDULER] Catch-up da parcial da noite acionado no startup | now={now}")
@@ -583,12 +618,11 @@ def run_missed_summaries_on_startup():
             "run_missed_summaries_on_startup",
             started,
             success=True,
-            ran_morning=ran_morning,
-            ran_afternoon=ran_afternoon,
-            ran_night=ran_night,
+            current_turn=current_turn,
+            ran_turn=ran_turn,
         )
     except Exception as e:
-        print(f"[SCHEDULER] Erro no catch-up de resumos no startup: {e}")
+        print(f"[SCHEDULER] Erro no catch-up seguro de resumos no startup: {e}")
         _job_log_end("run_missed_summaries_on_startup", started, success=False)
 
 def _refresh_clv_for_pending_predictions():
@@ -681,7 +715,8 @@ def job_check_games():
             except Exception as e:
                 print(f"[SCHEDULER] Erro ao persistir pré-jogo {fixture_id}: {e}")
 
-            alert_key = build_alert_key(fixture_id)
+            fixture_date = str(fixture.get("local_date") or fixture.get("date") or now_local().strftime("%Y-%m-%d"))
+            alert_key = build_alert_key(fixture_id, fixture_date)
 
             if _already_sent_alert(alert_key):
                 print(f"[SCHEDULER] Alerta já enviado: {home_team} x {away_team}")
