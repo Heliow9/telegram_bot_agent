@@ -20,3 +20,6 @@ for pick, item in sorted(snapshot.get('by_pick', {}).items()):
 print("\n--- Por confiança ---")
 for conf, item in sorted(snapshot.get('by_confidence', {}).items()):
     print(f"{conf}: total={item['total']} hits={item['hits']} acc={item['accuracy']:.2%}")
+    
+    
+    
