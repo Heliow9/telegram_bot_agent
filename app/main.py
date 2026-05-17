@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 
 from app.config import settings
+from app.core.logging_config import setup_logging
 from app.db import Base, engine
 from app.routers.predictions import router as predictions_router
 from app.routers.auth import router as auth_router
@@ -21,10 +22,7 @@ from app.services.scheduler_service import (
 )
 from app.services.post_deploy_sync_service import PostDeploySyncService
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(message)s",
-)
+setup_logging()
 logger = logging.getLogger(__name__)
 
 _scheduler_started = False

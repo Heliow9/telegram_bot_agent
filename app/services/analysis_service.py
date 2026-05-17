@@ -13,6 +13,8 @@ from app.services.odds_service import OddsService
 from app.services.value_bet_service import ValueBetService
 from app.services.market_selector_service import MarketSelectorService
 from app.services.performance_tuning_service import PerformanceTuningService
+from app.services.cache_service import CacheService
+from app.services.signal_score_service import SignalScoreService
 
 
 class AnalysisService:
@@ -23,6 +25,8 @@ class AnalysisService:
         self.value_bet_service = ValueBetService()
         self.market_selector = MarketSelectorService()
         self.performance_tuning = PerformanceTuningService()
+        self.cache = CacheService()
+        self.signal_score = SignalScoreService()
         self._table_cache: Dict[Tuple[str, str], List[Dict]] = {}
         self._team_events_cache: Dict[Tuple[str, str, int], List[Dict]] = {}
 
@@ -31,7 +35,11 @@ class AnalysisService:
         if cache_key in self._table_cache:
             return self._table_cache[cache_key]
 
-        data = self.api.lookup_table(league_id, season)
+        data = self.cache.remember(
+            f"table:{league_id}:{season}",
+            lambda: self.api.lookup_table(league_id, season),
+            ttl_seconds=3600,
+        )
         table = data.get("table")
         rows = table if isinstance(table, list) else []
         self._table_cache[cache_key] = rows
@@ -43,11 +51,23 @@ class AnalysisService:
             return self._team_events_cache[cache_key]
 
         if mode == "general":
-            data = self.api.get_team_last_events_list_limited(str(team_id), limit=limit)
+            data = self.cache.remember(
+                f"team:last:{team_id}:{limit}",
+                lambda: self.api.get_team_last_events_list_limited(str(team_id), limit=limit),
+                ttl_seconds=1800,
+            )
         elif mode == "home":
-            data = self.api.get_team_last_home_events(team_name, str(team_id), limit=limit)
+            data = self.cache.remember(
+                f"team:home:{team_id}:{limit}",
+                lambda: self.api.get_team_last_home_events(team_name, str(team_id), limit=limit),
+                ttl_seconds=1800,
+            )
         else:
-            data = self.api.get_team_last_away_events(team_name, str(team_id), limit=limit)
+            data = self.cache.remember(
+                f"team:away:{team_id}:{limit}",
+                lambda: self.api.get_team_last_away_events(team_name, str(team_id), limit=limit),
+                ttl_seconds=1800,
+            )
 
         rows = data or []
         self._team_events_cache[cache_key] = rows
@@ -196,11 +216,15 @@ class AnalysisService:
 
         raw_ml_probs = self.ml_model.predict_proba(features)
         probs, model_source = self._blend_probabilities(heuristic_analysis=heuristic_analysis, ml_probs=raw_ml_probs, features=features)
-        odds = self.odds_service.get_match_odds(
-            home_team=home_team,
-            away_team=away_team,
-            league_name=league_meta["display_name"],
-            match_date=match.get("dateEvent", ""),
+        odds = self.cache.remember(
+            f"odds:{league_meta.get('key')}:{match.get('idEvent') or home_team + '-' + away_team}:{match.get('dateEvent', '')}",
+            lambda: self.odds_service.get_match_odds(
+                home_team=home_team,
+                away_team=away_team,
+                league_name=league_meta["display_name"],
+                match_date=match.get("dateEvent", ""),
+            ),
+            ttl_seconds=600,
         )
 
         probs_payload = {
@@ -257,6 +281,7 @@ class AnalysisService:
         )
         decision_payload["value_bet"] = aligned_value_bet
         decision_payload["historical_tuning"] = historical_context["reliability"]
+        decision_payload["signal_score"] = self.signal_score.evaluate(decision_payload, features).to_dict()
 
         if aligned_value_bet.get("market_odds") and not (decision_payload.get("value_bet") or {}).get("market_odds"):
             decision_payload["value_bet"] = aligned_value_bet

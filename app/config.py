@@ -22,6 +22,18 @@ class Settings(BaseModel):
     app_host: str = os.getenv("APP_HOST", "127.0.0.1")
     app_port: int = int(os.getenv("APP_PORT", "8000"))
     app_role: str = os.getenv("APP_ROLE", "web").strip().lower()
+    log_level: str = os.getenv("LOG_LEVEL", "INFO")
+    log_dir: str = os.getenv("LOG_DIR", "logs")
+
+    redis_url: str = os.getenv("REDIS_URL", "")
+    celery_result_backend: str = os.getenv("CELERY_RESULT_BACKEND", "")
+    cache_enabled: bool = _env_bool("CACHE_ENABLED", "true")
+    cache_prefix: str = os.getenv("CACHE_PREFIX", "botbet")
+    cache_default_ttl_seconds: int = int(os.getenv("CACHE_DEFAULT_TTL_SECONDS", "300"))
+
+    signal_min_score: float = float(os.getenv("SIGNAL_MIN_SCORE", "0.72"))
+    signal_min_probability: float = float(os.getenv("SIGNAL_MIN_PROBABILITY", "0.52"))
+    signal_max_risk_penalty: float = float(os.getenv("SIGNAL_MAX_RISK_PENALTY", "0.22"))
 
     telegram_bot_token: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
     telegram_chat_id: str = os.getenv("TELEGRAM_CHAT_ID", "")
