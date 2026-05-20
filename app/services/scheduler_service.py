@@ -1,6 +1,7 @@
 from apscheduler.schedulers.background import BackgroundScheduler
 from pathlib import Path
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 import json
 import time
 
@@ -322,6 +323,107 @@ def _normalize_pick(value) -> str:
     return str(value or "").strip().upper()
 
 
+LOCAL_TZ = ZoneInfo("America/Recife")
+
+
+def _parse_payload_kickoff_local(payload: dict) -> datetime | None:
+    fixture = (payload or {}).get("fixture") or {}
+    raw = str(fixture.get("kickoff_local") or "").strip()
+
+    if raw:
+        try:
+            dt = datetime.fromisoformat(raw)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=LOCAL_TZ)
+            return dt.astimezone(LOCAL_TZ)
+        except Exception:
+            pass
+
+    local_date = str(fixture.get("local_date") or "").strip()
+    local_time = str(fixture.get("local_time") or "").strip()
+    if local_date:
+        try:
+            time_part = local_time or "00:00:00"
+            if time_part.count(":") == 1:
+                time_part = f"{time_part}:00"
+            return datetime.strptime(f"{local_date} {time_part}", "%Y-%m-%d %H:%M:%S").replace(tzinfo=LOCAL_TZ)
+        except Exception:
+            pass
+
+    # Fallback: date/time originais da API normalmente são UTC.
+    raw_date = str(fixture.get("date") or "").strip()
+    raw_time = str(fixture.get("time") or "").strip()
+    if raw_date:
+        try:
+            from app.services.time_utils import event_to_local_datetime
+            return event_to_local_datetime(raw_date, raw_time)
+        except Exception:
+            return None
+
+    return None
+
+
+def _payload_label(payload: dict) -> str:
+    fixture = (payload or {}).get("fixture") or {}
+    return f"{fixture.get('home_team', 'Casa')} x {fixture.get('away_team', 'Fora')}"
+
+
+def _payload_minutes_to_start(payload: dict) -> float | None:
+    kickoff = _parse_payload_kickoff_local(payload)
+    if kickoff is None:
+        return None
+    return (kickoff - now_local()).total_seconds() / 60.0
+
+
+def _is_payload_strictly_future(payload: dict, min_lead_minutes: int = 1) -> bool:
+    minutes = _payload_minutes_to_start(payload)
+    if minutes is None:
+        print(f"[GUARD][DROP] sem kickoff válido | jogo={_payload_label(payload)}")
+        return False
+    if minutes < min_lead_minutes:
+        print(
+            f"[GUARD][DROP] jogo já começou ou está muito perto | "
+            f"jogo={_payload_label(payload)} | min_para_inicio={minutes:.1f}"
+        )
+        return False
+    return True
+
+
+def _is_payload_in_prelive_window(payload: dict, min_minutes: int = 0, max_minutes: int = 30) -> bool:
+    minutes = _payload_minutes_to_start(payload)
+    if minutes is None:
+        print(f"[PRELIVE][DROP] sem kickoff válido | jogo={_payload_label(payload)}")
+        return False
+    if not (min_minutes <= minutes <= max_minutes):
+        print(
+            f"[PRELIVE][DROP] fora da janela | jogo={_payload_label(payload)} | "
+            f"min_para_inicio={minutes:.1f} | janela={min_minutes}-{max_minutes}"
+        )
+        return False
+    return True
+
+
+def _filter_payloads_future(payloads: list[dict], source_label: str, min_lead_minutes: int = 1) -> list[dict]:
+    valid = []
+    for payload in payloads or []:
+        if _is_payload_strictly_future(payload, min_lead_minutes=min_lead_minutes):
+            valid.append(payload)
+    dropped = len(payloads or []) - len(valid)
+    if dropped:
+        print(f"[GUARD] Payloads descartados em {source_label}: {dropped}")
+    return valid
+
+
+def _filter_payloads_prelive(payloads: list[dict]) -> list[dict]:
+    valid = []
+    for payload in payloads or []:
+        if _is_payload_in_prelive_window(payload, 0, 30):
+            valid.append(payload)
+    dropped = len(payloads or []) - len(valid)
+    if dropped:
+        print(f"[PRELIVE] Payloads descartados na validação final: {dropped}")
+    return valid
+
 def _pick_latest_market_odds_by_market(
     market_type: str,
     pick: str,
@@ -371,12 +473,18 @@ def _persist_payloads(payloads: list[dict], source_label: str):
 
 
 def _send_ranked_summary(payloads: list[dict], period_label: str):
+    payloads = _filter_payloads_future(payloads, f"summary:{period_label}", min_lead_minutes=1)
+
+    if not payloads:
+        print(f"[SCHEDULER] Nenhum payload futuro válido para enviar no resumo de {period_label}.")
+        return {"ok": False, "sent": 0, "reason": "no_future_payloads"}
+
     _persist_payloads(payloads, period_label)
 
     best_result = telegram.send_message(format_best_pick(payloads[0]))
     print(f"[SCHEDULER] Melhor aposta enviada ({period_label}): {best_result}")
 
-    ranking_result = telegram.send_message(format_top_ranking(payloads, top_n=5))
+    ranking_result = telegram.send_message(format_top_ranking(payloads, top_n=10))
     print(f"[SCHEDULER] Top ranking enviado ({period_label}): {ranking_result}")
 
     grouped = group_payloads_by_league(payloads)
@@ -408,15 +516,17 @@ def _send_ranked_summary(payloads: list[dict], period_label: str):
         )
         print(f"[SCHEDULER] Resumo enviado para liga {league_name}: {result}")
 
+    return {"ok": True, "sent": len(payloads)}
 
 
 def _preload_turn_payloads(payloads: list[dict], period_label: str):
     """Persiste palpites do turno para dashboard e envia a grade consolidada no Telegram."""
-    _send_ranked_summary(payloads, period_label)
+    result = _send_ranked_summary(payloads, period_label)
     print(
-        f"[SCHEDULER] Grade do turno enviada e persistida | "
-        f"periodo={period_label} | payloads={len(payloads)}"
+        f"[SCHEDULER] Grade do turno processada | "
+        f"periodo={period_label} | payloads_entrada={len(payloads)} | result={result}"
     )
+    return result
 
 
 def job_send_morning_summary():
@@ -446,9 +556,10 @@ def job_send_morning_summary():
         return
 
     try:
-        _preload_turn_payloads(payloads, "manhã")
-        _save_sent_summary(summary_key)
-        _job_log_end("job_send_morning_summary", started, success=True, payloads=total_payloads)
+        send_result = _preload_turn_payloads(payloads, "manhã")
+        if send_result.get("ok"):
+            _save_sent_summary(summary_key)
+        _job_log_end("job_send_morning_summary", started, success=bool(send_result.get("ok")), payloads=total_payloads, sent=send_result.get("sent", 0))
     except Exception as e:
         print(f"[SCHEDULER] Erro ao enviar resumo da manhã: {e}")
         _job_log_end("job_send_morning_summary", started, success=False, payloads=total_payloads)
@@ -481,9 +592,10 @@ def job_send_afternoon_summary():
         return
 
     try:
-        _preload_turn_payloads(payloads, "tarde")
-        _save_sent_summary(summary_key)
-        _job_log_end("job_send_afternoon_summary", started, success=True, payloads=total_payloads)
+        send_result = _preload_turn_payloads(payloads, "tarde")
+        if send_result.get("ok"):
+            _save_sent_summary(summary_key)
+        _job_log_end("job_send_afternoon_summary", started, success=bool(send_result.get("ok")), payloads=total_payloads, sent=send_result.get("sent", 0))
     except Exception as e:
         print(f"[SCHEDULER] Erro ao enviar resumo da tarde: {e}")
         _job_log_end("job_send_afternoon_summary", started, success=False, payloads=total_payloads)
@@ -518,9 +630,10 @@ def job_send_night_summary():
         return
 
     try:
-        _preload_turn_payloads(payloads, "noite")
-        _save_sent_summary(summary_key)
-        _job_log_end("job_send_night_summary", started, success=True, payloads=total_payloads)
+        send_result = _preload_turn_payloads(payloads, "noite")
+        if send_result.get("ok"):
+            _save_sent_summary(summary_key)
+        _job_log_end("job_send_night_summary", started, success=bool(send_result.get("ok")), payloads=total_payloads, sent=send_result.get("sent", 0))
     except Exception as e:
         print(f"[SCHEDULER] Erro ao enviar resumo da noite: {e}")
         _job_log_end("job_send_night_summary", started, success=False, payloads=total_payloads)
@@ -684,8 +797,10 @@ def job_check_games():
 
     try:
         payloads = daily_service.get_30min_payloads()
+        raw_payloads = len(payloads)
+        payloads = _filter_payloads_prelive(payloads)
         total_payloads = len(payloads)
-        print(f"[SCHEDULER] Jogos encontrados na janela dos 30 min: {total_payloads}")
+        print(f"[SCHEDULER] Jogos encontrados na janela dos 30 min: {total_payloads} | raw={raw_payloads}")
     except Exception as e:
         print(f"[SCHEDULER] Erro ao buscar payloads: {e}")
         _job_log_end("job_check_games", started, success=False, error="fetch_payloads")

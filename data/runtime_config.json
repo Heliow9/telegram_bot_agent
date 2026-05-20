@@ -1,0 +1,9 @@
+{
+  "value_bet_edge": 0.05,
+  "live_monitor_enabled": true,
+  "live_monitor_interval_seconds": 390,
+  "live_minute_checkpoints": "15,30,45,60,75",
+  "live_signal_min_shots_diff": 4,
+  "live_signal_min_on_target_diff": 2,
+  "live_signal_min_possession_diff": 8
+}

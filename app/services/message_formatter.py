@@ -73,6 +73,29 @@ def _time_only(date_value: str, time_value: str) -> str:
     return local_time[:5] if local_time else "--:--"
 
 
+def _fixture_local_parts(fixture: dict) -> tuple[str, str]:
+    """Retorna data/hora local já normalizada no payload.
+
+    O analysis_service grava local_date/local_time/kickoff_local para evitar
+    confusão entre UTC e horário do Brasil nos envios do Telegram.
+    """
+    local_date = _safe_text(fixture.get("local_date"))
+    local_time = _safe_text(fixture.get("local_time"))
+
+    if local_date or local_time:
+        return local_date or "--", (local_time[:5] if local_time else "--:--")
+
+    date_value, time_value = format_local_datetime(
+        fixture.get("date", ""),
+        fixture.get("time", ""),
+    )
+    return date_value or "--", (time_value[:5] if time_value else "--:--")
+
+
+def _fixture_local_time(fixture: dict) -> str:
+    return _fixture_local_parts(fixture)[1]
+
+
 def _league_emoji(league_name: str) -> str:
     return LEAGUE_EMOJIS.get(league_name, "🏆")
 
@@ -395,11 +418,7 @@ def format_prediction_message(payload: dict) -> str:
     league_name = payload["league"]["display_name"]
     emoji = _league_emoji(league_name)
 
-    local_date, local_time = format_local_datetime(
-        fixture["date"],
-        fixture["time"],
-    )
-    local_time = local_time[:5] if local_time else "--:--"
+    local_date, local_time = _fixture_local_parts(fixture)
 
     home_team = fixture["home_team"]
     away_team = fixture["away_team"]
@@ -448,7 +467,7 @@ def format_best_pick(payload: dict) -> str:
     league_name = payload["league"]["display_name"]
     emoji = _league_emoji(league_name)
 
-    local_time = _time_only(fixture["date"], fixture["time"])
+    local_time = _fixture_local_time(fixture)
     home_team = fixture["home_team"]
     away_team = fixture["away_team"]
 
@@ -502,7 +521,7 @@ def format_top_ranking(payloads: list[dict], top_n: int = 5) -> str:
     medals = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
     top_items = payloads[:top_n]
 
-    lines = ["📊 *TOP PALPITES DO DIA*", ""]
+    lines = ["📊 *RANKING DE PALPITES*", ""]
 
     for idx, payload in enumerate(top_items):
         fixture = payload["fixture"]
@@ -524,7 +543,7 @@ def format_top_ranking(payloads: list[dict], top_n: int = 5) -> str:
         lines.append(f"{marker} *{_md(home_team)} x {_md(away_team)}*{value_flag}")
         lines.append(
             f"{emoji} {_md(league_name)} • "
-            f"{_md(_time_only(fixture['date'], fixture['time']))}"
+            f"{_md(_fixture_local_time(fixture))}"
         )
         lines.append(
             f"Mercado: *{_md(_market_type_label(market_type))}* • "
@@ -576,7 +595,7 @@ def format_league_summary(league_name: str, payloads: list[dict]) -> str:
         edge = _get_pick_edge(analysis)
 
         lines.append(f"⚽ *{_md(home_team)} x {_md(away_team)}*{value_flag}")
-        lines.append(f"🕒 {_md(_time_only(fixture['date'], fixture['time']))}")
+        lines.append(f"🕒 {_md(_fixture_local_time(fixture))}")
         lines.append(
             f"🎯 *{_md(_pick_label(final_pick))}* \\| "
             f"📦 *{_md(_market_type_label(market_type))}* \\| "
