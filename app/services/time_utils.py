@@ -45,16 +45,28 @@ def event_to_local_datetime(date_event: str, str_time: str) -> Optional[datetime
 
 
 def event_payload_to_local_datetime(event: Mapping) -> Optional[datetime]:
-    local_date = str(event.get("dateEventLocal") or "").strip()
-    local_time = str(event.get("strTimeLocal") or "").strip()
-    if local_date:
-        parsed = _parse_datetime(local_date, local_time, LOCAL_TZ)
-        if parsed is not None:
-            return parsed
-    return event_to_local_datetime(
+    """Converte o kickoff da TheSportsDB para America/Recife.
+
+    Regra crítica: `dateEvent` + `strTime` é a referência UTC da API.
+    Já `dateEventLocal`/`strTimeLocal` pode representar o horário local do
+    estádio/país da liga, não o fuso do bot. Usar esse campo como Recife causa
+    erro de +1h/+2h/+5h em ligas estrangeiras e faz o Telegram anunciar horário
+    errado. Por isso, priorizamos UTC -> Recife e usamos o local apenas como
+    fallback quando a API não mandar horário UTC.
+    """
+    utc_dt = event_to_local_datetime(
         str(event.get("dateEvent") or "").strip(),
         str(event.get("strTime") or "").strip(),
     )
+    if utc_dt is not None:
+        return utc_dt
+
+    local_date = str(event.get("dateEventLocal") or "").strip()
+    local_time = str(event.get("strTimeLocal") or "").strip()
+    if local_date and local_time:
+        return _parse_datetime(local_date, local_time, LOCAL_TZ)
+
+    return None
 
 
 def format_local_datetime(date_event: str, str_time: str) -> tuple[str, str]:

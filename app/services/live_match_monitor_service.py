@@ -9,7 +9,7 @@ from app.services.live_state_service import LiveStateService
 from app.services.runtime_config_service import load_runtime_config
 from app.services.sportsdb_api import SportsDBAPI
 from app.services.telegram_service import TelegramService
-from app.services.time_utils import now_local
+from app.services.time_utils import now_local, event_payload_to_local_datetime
 from app.services.prediction_store import (
     get_prediction_by_fixture_id,
     update_prediction_live_state,
@@ -87,6 +87,22 @@ class LiveMatchMonitorService:
 
         return True
 
+    def _infer_elapsed_from_kickoff(self, event: Dict) -> Optional[int]:
+        kickoff = event_payload_to_local_datetime(event)
+        if kickoff is None:
+            return None
+        elapsed = int((now_local() - kickoff).total_seconds() // 60)
+        # Mantém uma janela segura de futebol: não considerar como live antes
+        # do início nem muitas horas depois quando a API não atualiza status.
+        if 0 <= elapsed <= 130:
+            return elapsed
+        return None
+
+    def _looks_live_by_clock(self, event: Dict) -> bool:
+        # Fallback para quando a API não preenche strStatus, mas o jogo já está
+        # dentro da janela de andamento. Sem isso, os alertas 15/30/45/60 somem.
+        return self._infer_elapsed_from_kickoff(event) is not None
+
     def _extract_elapsed(self, event: Dict) -> Optional[int]:
         candidates = [
             event.get("intTime"),
@@ -104,7 +120,7 @@ class LiveMatchMonitorService:
             except Exception:
                 continue
 
-        return None
+        return self._infer_elapsed_from_kickoff(event)
 
     def _match_clock(self, event: Dict) -> str:
         elapsed = self._extract_elapsed(event)
@@ -122,9 +138,12 @@ class LiveMatchMonitorService:
         if elapsed is None:
             return None
 
-        for checkpoint in self._checkpoints():
-            if elapsed >= checkpoint and checkpoint not in already_sent:
-                return checkpoint
+        # Envia somente o checkpoint da janela atual. Ex.: aos 31' envia 30',
+        # não 15' atrasado. Isso evita mensagens fora de contexto.
+        tolerance = 4
+        due = [cp for cp in self._checkpoints() if cp <= elapsed <= cp + tolerance and cp not in already_sent]
+        if due:
+            return max(due)
         return None
 
     def _build_snapshot(self, event: Dict, league_meta: Dict) -> Dict:
@@ -298,7 +317,7 @@ class LiveMatchMonitorService:
             if not fixture_id:
                 continue
 
-            if self._is_live_status(status_text):
+            if self._is_live_status(status_text) or self._looks_live_by_clock(event):
                 live_events.append(event)
             else:
                 self._clear_not_live_if_needed(fixture_id, event)
@@ -328,7 +347,7 @@ class LiveMatchMonitorService:
                 details = self.api.get_event_details(fixture_id) or event
 
                 current_status = (details.get("strStatus") or event.get("strStatus") or "").strip()
-                if not self._is_live_status(current_status):
+                if not (self._is_live_status(current_status) or self._looks_live_by_clock(details)):
                     self._clear_not_live_if_needed(fixture_id, details)
                     continue
 
