@@ -4,6 +4,8 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 import json
 import time
+from contextlib import contextmanager
+
 
 from app.config import settings
 from app.db import SessionLocal
@@ -32,6 +34,7 @@ from app.services.prediction_store import (
     update_prediction_market_odds,
 )
 from app.services.runtime_config_service import load_runtime_config
+from app.services.json_lock_store import locked_json
 
 
 scheduler = BackgroundScheduler(timezone="America/Recife")
@@ -50,6 +53,28 @@ training_job_running = False
 ALERT_STORE_PATH = Path("data/sent_alerts.json")
 RESULT_STORE_PATH = Path("data/sent_results.json")
 SUMMARY_STORE_PATH = Path("data/sent_summaries.json")
+
+
+def _claim_json_key(path: Path, key: str) -> bool:
+    """Marca uma chave como em envio de forma atômica entre processos."""
+    key = str(key or "").strip()
+    if not key:
+        return False
+    with locked_json(path, list) as items:
+        if key in items:
+            return False
+        items.append(key)
+        return True
+
+
+def _release_json_key(path: Path, key: str) -> None:
+    """Remove a chave quando o Telegram falha, permitindo nova tentativa."""
+    key = str(key or "").strip()
+    if not key:
+        return
+    with locked_json(path, list) as items:
+        while key in items:
+            items.remove(key)
 
 
 def _runtime_config():
@@ -229,8 +254,8 @@ def job_send_turn_partial_summary(turn: str):
     started = _job_log_start(f"job_send_turn_partial_summary:{turn}")
     key = _partial_summary_key(turn)
 
-    if _already_sent_summary(key):
-        _job_log_end(f"job_send_turn_partial_summary:{turn}", started, sent=False, reason="already_sent")
+    if not _claim_json_key(SUMMARY_STORE_PATH, key):
+        _job_log_end(f"job_send_turn_partial_summary:{turn}", started, sent=False, reason="already_sent_or_claimed")
         return
 
     start_hour, end_hour, label = _turn_bounds(turn)
@@ -284,8 +309,8 @@ def job_send_turn_partial_summary(turn: str):
                 )
 
         result = telegram.send_message("\n".join(lines))
-        if result.get("ok"):
-            _save_sent_summary(key)
+        if not result.get("ok"):
+            _release_json_key(SUMMARY_STORE_PATH, key)
 
         _job_log_end(f"job_send_turn_partial_summary:{turn}", started, success=bool(result.get("ok")), rows=total)
     except Exception as e:
@@ -556,11 +581,17 @@ def job_send_morning_summary():
         return
 
     try:
+        if not _claim_json_key(SUMMARY_STORE_PATH, summary_key):
+            print("[SCHEDULER] Resumo da manhã já enviado/em envio hoje.")
+            _job_log_end("job_send_morning_summary", started, sent=False, reason="already_sent_or_claimed")
+            return
+
         send_result = _preload_turn_payloads(payloads, "manhã")
-        if send_result.get("ok"):
-            _save_sent_summary(summary_key)
+        if not send_result.get("ok"):
+            _release_json_key(SUMMARY_STORE_PATH, summary_key)
         _job_log_end("job_send_morning_summary", started, success=bool(send_result.get("ok")), payloads=total_payloads, sent=send_result.get("sent", 0))
     except Exception as e:
+        _release_json_key(SUMMARY_STORE_PATH, summary_key)
         print(f"[SCHEDULER] Erro ao enviar resumo da manhã: {e}")
         _job_log_end("job_send_morning_summary", started, success=False, payloads=total_payloads)
 
@@ -592,11 +623,17 @@ def job_send_afternoon_summary():
         return
 
     try:
+        if not _claim_json_key(SUMMARY_STORE_PATH, summary_key):
+            print("[SCHEDULER] Resumo da tarde já enviado/em envio hoje.")
+            _job_log_end("job_send_afternoon_summary", started, sent=False, reason="already_sent_or_claimed")
+            return
+
         send_result = _preload_turn_payloads(payloads, "tarde")
-        if send_result.get("ok"):
-            _save_sent_summary(summary_key)
+        if not send_result.get("ok"):
+            _release_json_key(SUMMARY_STORE_PATH, summary_key)
         _job_log_end("job_send_afternoon_summary", started, success=bool(send_result.get("ok")), payloads=total_payloads, sent=send_result.get("sent", 0))
     except Exception as e:
+        _release_json_key(SUMMARY_STORE_PATH, summary_key)
         print(f"[SCHEDULER] Erro ao enviar resumo da tarde: {e}")
         _job_log_end("job_send_afternoon_summary", started, success=False, payloads=total_payloads)
 
@@ -630,11 +667,17 @@ def job_send_night_summary():
         return
 
     try:
+        if not _claim_json_key(SUMMARY_STORE_PATH, summary_key):
+            print("[SCHEDULER] Resumo da noite já enviado/em envio hoje.")
+            _job_log_end("job_send_night_summary", started, sent=False, reason="already_sent_or_claimed")
+            return
+
         send_result = _preload_turn_payloads(payloads, "noite")
-        if send_result.get("ok"):
-            _save_sent_summary(summary_key)
+        if not send_result.get("ok"):
+            _release_json_key(SUMMARY_STORE_PATH, summary_key)
         _job_log_end("job_send_night_summary", started, success=bool(send_result.get("ok")), payloads=total_payloads, sent=send_result.get("sent", 0))
     except Exception as e:
+        _release_json_key(SUMMARY_STORE_PATH, summary_key)
         print(f"[SCHEDULER] Erro ao enviar resumo da noite: {e}")
         _job_log_end("job_send_night_summary", started, success=False, payloads=total_payloads)
 
@@ -831,21 +874,21 @@ def job_check_games():
             fixture_date = str(fixture.get("local_date") or fixture.get("date") or now_local().strftime("%Y-%m-%d"))
             alert_key = build_alert_key(fixture_id, fixture_date)
 
-            if _already_sent_alert(alert_key):
-                print(f"[SCHEDULER] Alerta já enviado: {home_team} x {away_team}")
+            if not _claim_json_key(ALERT_STORE_PATH, alert_key):
+                print(f"[SCHEDULER] Alerta já enviado/em envio: {home_team} x {away_team}")
                 continue
 
             message = format_prediction_message(payload)
             result = telegram.send_message(message)
 
             if result.get("ok"):
-                _save_sent_alert(alert_key)
                 sent_alerts += 1
                 print(
                     f"[SCHEDULER] Pré-jogo enviado com sucesso: "
                     f"{home_team} x {away_team}"
                 )
             else:
+                _release_json_key(ALERT_STORE_PATH, alert_key)
                 print(f"[SCHEDULER] Falha no envio Telegram: {result}")
 
         except Exception as e:
@@ -888,8 +931,8 @@ def job_check_results():
             fixture_id = str(item.get("fixture_id", "")).strip()
             result_key = build_result_key(fixture_id)
 
-            if _already_sent_result(result_key):
-                print(f"[SCHEDULER] Resultado já enviado anteriormente: {fixture_id}")
+            if not _claim_json_key(RESULT_STORE_PATH, result_key):
+                print(f"[SCHEDULER] Resultado já enviado/em envio anteriormente: {fixture_id}")
                 continue
 
             ai_summary = gemini_summary.build_result_summary(item)
@@ -904,13 +947,13 @@ def job_check_results():
             print(f"[SCHEDULER] Retorno Telegram: {result}")
 
             if result.get("ok"):
-                _save_sent_result(result_key)
                 sent_count += 1
                 print(
                     f"[SCHEDULER] Resultado enviado com sucesso: "
                     f"{item['home_team']} x {item['away_team']} | {item['status']}"
                 )
             else:
+                _release_json_key(RESULT_STORE_PATH, result_key)
                 print(f"[SCHEDULER] Falha ao enviar resultado: {result}")
 
         except Exception as e:

@@ -115,6 +115,8 @@ class DailyLeaguesService:
             self._normalize_text(league_meta.get("display_name")),
             self._normalize_text(league_meta.get("key")),
         }
+        for alias in league_meta.get("aliases", []) or []:
+            wanted_names.add(self._normalize_text(alias))
         wanted_names = {x for x in wanted_names if x}
 
         if not event_league:
@@ -171,13 +173,26 @@ class DailyLeaguesService:
     def _collect_raw_events_for_dates(self, league_meta: Dict, dates: List[str]) -> List[Dict]:
         raw_events: List[Dict] = []
         for date_str in dates:
-            try:
-                by_name = self.api.get_events_by_day_list(date_str, league_meta["name"])
-                if by_name:
-                    raw_events.extend(by_name)
-                    print(f"[DAILY][SOURCE] {league_meta['display_name']} | eventsday:l | data={date_str} | qtd={len(by_name)}")
-            except Exception as e:
-                print(f"[DAILY] Falha eventsday por nome em {league_meta['display_name']} data={date_str}: {e}")
+            league_names_to_try = [league_meta["name"], *list(league_meta.get("aliases", []) or [])]
+            tried_names = set()
+            for league_name in league_names_to_try:
+                league_name = str(league_name or "").strip()
+                if not league_name or league_name.lower() in tried_names:
+                    continue
+                tried_names.add(league_name.lower())
+                try:
+                    by_name = self.api.get_events_by_day_list(date_str, league_name)
+                    if by_name:
+                        raw_events.extend(by_name)
+                        print(
+                            f"[DAILY][SOURCE] {league_meta['display_name']} | eventsday:l | "
+                            f"nome={league_name} | data={date_str} | qtd={len(by_name)}"
+                        )
+                except Exception as e:
+                    print(
+                        f"[DAILY] Falha eventsday por nome em {league_meta['display_name']} "
+                        f"nome={league_name} data={date_str}: {e}"
+                    )
 
             try:
                 by_sport = self.api.get_events_by_day_sport_list(date_str, sport="Soccer")

@@ -2,6 +2,8 @@ from pathlib import Path
 from typing import Dict, Any
 import json
 
+from app.services.json_lock_store import locked_json
+
 
 LIVE_STATE_PATH = Path("data/live_state.json")
 
@@ -26,16 +28,27 @@ class LiveStateService:
 
     def save(self, data: Dict[str, Any]):
         self._ensure_store()
-        self.path.write_text(
-            json.dumps(data, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        with locked_json(self.path, dict) as state:
+            state.clear()
+            state.update(data or {})
 
     def get_fixture_state(self, fixture_id: str) -> Dict[str, Any]:
         state = self.load()
-        return state.get(fixture_id, {})
+        return state.get(str(fixture_id), {})
 
     def update_fixture_state(self, fixture_id: str, fixture_state: Dict[str, Any]):
-        state = self.load()
-        state[fixture_id] = fixture_state
-        self.save(state)
+        fixture_id = str(fixture_id)
+        with locked_json(self.path, dict) as state:
+            state[fixture_id] = fixture_state
+
+    def claim_checkpoint(self, fixture_id: str, checkpoint: int) -> bool:
+        """Reserva checkpoint live de forma atômica entre processos."""
+        fixture_id = str(fixture_id)
+        with locked_json(self.path, dict) as state:
+            current = state.get(fixture_id, {}) or {}
+            sent = current.get("sent_checkpoints", []) or []
+            if checkpoint in sent:
+                return False
+            current["sent_checkpoints"] = sorted(set(sent + [checkpoint]))
+            state[fixture_id] = current
+            return True

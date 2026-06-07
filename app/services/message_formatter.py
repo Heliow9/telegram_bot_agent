@@ -17,6 +17,8 @@ LEAGUE_EMOJIS = {
     "Libertadores": "🏆",
     "Championship": "🏴",
     "Bundesliga": "🇩🇪",
+    "Copa do Mundo": "🌎",
+    "Amistosos Internacionais": "🌐",
 }
 
 

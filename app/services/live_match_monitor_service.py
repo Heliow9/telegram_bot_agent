@@ -138,9 +138,15 @@ class LiveMatchMonitorService:
         if elapsed is None:
             return None
 
-        # Envia somente o checkpoint da janela atual. Ex.: aos 31' envia 30',
-        # não 15' atrasado. Isso evita mensagens fora de contexto.
-        tolerance = 4
+        # Envia somente o checkpoint da janela atual. A tolerância acompanha
+        # o intervalo configurado do monitor para não perder 15/30/45/60 quando
+        # LIVE_MONITOR_INTERVAL_SECONDS estiver acima de 4 minutos.
+        runtime = self._runtime()
+        try:
+            interval_seconds = int(runtime.get("live_monitor_interval_seconds", settings.live_monitor_interval_seconds))
+        except Exception:
+            interval_seconds = settings.live_monitor_interval_seconds
+        tolerance = max(4, int(interval_seconds / 60) + 2)
         due = [cp for cp in self._checkpoints() if cp <= elapsed <= cp + tolerance and cp not in already_sent]
         if due:
             return max(due)
@@ -259,23 +265,30 @@ class LiveMatchMonitorService:
 
         for league_meta in LEAGUES:
             for date_str in self._today_candidates():
-                try:
-                    events = self.api.get_events_by_day_list(
-                        date_str,
-                        league_meta["name"],
-                    )
-                    for event in events:
-                        event_id = str(event.get("idEvent", ""))
-                        if not event_id or event_id in seen_ids:
-                            continue
-                        seen_ids.add(event_id)
-                        event["_league_meta"] = league_meta
-                        all_events.append(event)
-                except Exception as e:
-                    print(
-                        f"[LIVE] Erro buscando eventos "
-                        f"{league_meta['display_name']} em {date_str}: {e}"
-                    )
+                league_names_to_try = [league_meta["name"], *list(league_meta.get("aliases", []) or [])]
+                tried_names = set()
+                for league_name in league_names_to_try:
+                    league_name = str(league_name or "").strip()
+                    if not league_name or league_name.lower() in tried_names:
+                        continue
+                    tried_names.add(league_name.lower())
+                    try:
+                        events = self.api.get_events_by_day_list(
+                            date_str,
+                            league_name,
+                        )
+                        for event in events:
+                            event_id = str(event.get("idEvent", ""))
+                            if not event_id or event_id in seen_ids:
+                                continue
+                            seen_ids.add(event_id)
+                            event["_league_meta"] = league_meta
+                            all_events.append(event)
+                    except Exception as e:
+                        print(
+                            f"[LIVE] Erro buscando eventos "
+                            f"{league_meta['display_name']} nome={league_name} em {date_str}: {e}"
+                        )
 
         return all_events
 
@@ -372,10 +385,12 @@ class LiveMatchMonitorService:
                     sent_checkpoints,
                 )
                 if checkpoint is not None:
-                    self._send_checkpoint_alert(snapshot, checkpoint)
-                    snapshot["sent_checkpoints"] = sorted(
-                        set(sent_checkpoints + [checkpoint])
-                    )
+                    if self.state_service.claim_checkpoint(fixture_id, checkpoint):
+                        self._send_checkpoint_alert(snapshot, checkpoint)
+                        sent_checkpoints = sorted(set(sent_checkpoints + [checkpoint]))
+                    else:
+                        print(f"[LIVE] Checkpoint já enviado/em envio | fixture_id={fixture_id} | cp={checkpoint}")
+                    snapshot["sent_checkpoints"] = sent_checkpoints
 
                 update_prediction_live_state(
                     fixture_id=fixture_id,
