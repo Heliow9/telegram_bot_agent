@@ -746,6 +746,8 @@ def market_overview(
         
         
         
+        
+        
 
         try:
             pick = (prediction.pick or "").upper()
