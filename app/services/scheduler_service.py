@@ -55,6 +55,7 @@ RESULT_STORE_PATH = Path("data/sent_results.json")
 SUMMARY_STORE_PATH = Path("data/sent_summaries.json")
 MIN_DAILY_RANKING_ITEMS = 5
 DAILY_RANKING_TOP_N = 10
+BASKETBALL_RANKING_TOP_N = 8
 
 
 def _claim_json_key(path: Path, key: str) -> bool:
@@ -238,6 +239,31 @@ def _turn_bounds(turn: str):
     raise ValueError(f"Turno inválido: {turn}")
 
 
+
+
+def _partial_target_time(turn: str):
+    if turn == "morning":
+        return 12, 29, "manhã"
+    if turn == "afternoon":
+        return 17, 59, "tarde"
+    if turn == "night":
+        return 23, 59, "noite"
+    raise ValueError(f"Turno inválido: {turn}")
+
+
+def _is_inside_partial_catchup_window(turn: str, dt=None, grace_minutes: int = 20) -> bool:
+    """Evita envio tardio de parcial após deploy/restart.
+
+    A parcial deve sair antes da próxima grade: manhã 12:29, tarde 17:59, noite 23:59.
+    Se o servidor voltar muito depois disso, não recupera a parcial antiga para não
+    confundir com os palpites do turno atual.
+    """
+    dt = dt or now_local()
+    hour, minute, _ = _partial_target_time(turn)
+    target = dt.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    return target <= dt <= target + timedelta(minutes=grace_minutes)
+
+
 def _partial_summary_key(turn: str) -> str:
     return f"{now_local().strftime('%Y-%m-%d')}_{turn}_partial"
 
@@ -252,9 +278,18 @@ def _prediction_hour(row: Prediction) -> int | None:
         return None
 
 
-def job_send_turn_partial_summary(turn: str):
+def job_send_turn_partial_summary(turn: str, allow_late: bool = False):
     started = _job_log_start(f"job_send_turn_partial_summary:{turn}")
     key = _partial_summary_key(turn)
+
+    if not allow_late and not _is_inside_partial_catchup_window(turn, now_local(), grace_minutes=20):
+        _job_log_end(
+            f"job_send_turn_partial_summary:{turn}",
+            started,
+            sent=False,
+            reason="outside_partial_window",
+        )
+        return
 
     if not _claim_json_key(SUMMARY_STORE_PATH, key):
         _job_log_end(f"job_send_turn_partial_summary:{turn}", started, sent=False, reason="already_sent_or_claimed")
@@ -621,6 +656,54 @@ def job_send_daily_top_summary():
         return {"ok": False, "sent": 0, "error": str(e)}
 
 
+
+def job_send_basketball_daily_summary():
+    """Envia ranking diário de basquete separado do futebol."""
+    started = _job_log_start("job_send_basketball_daily_summary")
+    today = now_local().strftime("%Y-%m-%d")
+    summary_key = f"{today}_basketball_daily"
+
+    if _already_sent_summary(summary_key):
+        _job_log_end("job_send_basketball_daily_summary", started, sent=False, reason="already_sent")
+        return {"ok": False, "sent": 0, "reason": "already_sent"}
+
+    try:
+        payloads = daily_service.get_basketball_all_day_payloads(today)
+        payloads = _filter_payloads_future(payloads, "basketball_daily", min_lead_minutes=1)
+
+        if not payloads:
+            upcoming = daily_service.get_basketball_upcoming_payloads(hours=36)
+            payloads = _filter_payloads_future(upcoming, "basketball_daily_backfill", min_lead_minutes=1)
+
+        if not payloads:
+            _job_log_end("job_send_basketball_daily_summary", started, success=True, payloads=0, sent=False, retryable=True)
+            return {"ok": False, "sent": 0, "reason": "no_future_payloads"}
+
+        if not _claim_json_key(SUMMARY_STORE_PATH, summary_key):
+            _job_log_end("job_send_basketball_daily_summary", started, sent=False, reason="already_sent_or_claimed")
+            return {"ok": False, "sent": 0, "reason": "already_sent_or_claimed"}
+
+        _persist_payloads(payloads, "ranking_basquete")
+        ranking_result = telegram.send_message(format_top_ranking(payloads, top_n=BASKETBALL_RANKING_TOP_N))
+        ok = bool(ranking_result.get("ok"))
+        if not ok:
+            _release_json_key(SUMMARY_STORE_PATH, summary_key)
+
+        _job_log_end(
+            "job_send_basketball_daily_summary",
+            started,
+            success=ok,
+            payloads=len(payloads),
+            sent=min(len(payloads), BASKETBALL_RANKING_TOP_N),
+        )
+        return {"ok": ok, "sent": min(len(payloads), BASKETBALL_RANKING_TOP_N), "payloads": len(payloads)}
+    except Exception as e:
+        _release_json_key(SUMMARY_STORE_PATH, summary_key)
+        print(f"[SCHEDULER] Erro ao enviar ranking de basquete: {e}")
+        _job_log_end("job_send_basketball_daily_summary", started, success=False)
+        return {"ok": False, "sent": 0, "error": str(e)}
+
+
 def _preload_turn_payloads(payloads: list[dict], period_label: str):
     """Persiste palpites do turno para dashboard e envia a grade consolidada no Telegram."""
     result = _send_ranked_summary(payloads, period_label)
@@ -824,20 +907,19 @@ def run_missed_summaries_on_startup():
         else:
             print(f"[SCHEDULER] Catch-up de grades ignorado fora dos turnos | now={now}")
 
-        # Parciais de turnos encerrados podem continuar, pois são resumo de desempenho,
-        # não palpites pré-jogo. Só enviam se houver previsões persistidas.
-        current_hhmm = now.strftime("%H:%M")
-        if current_hhmm >= "12:00" and not _already_sent_summary(_partial_summary_key("morning")):
-            print(f"[SCHEDULER] Catch-up da parcial da manhã acionado no startup | now={now}")
-            job_send_morning_partial_summary()
-
-        if current_hhmm >= "18:00" and not _already_sent_summary(_partial_summary_key("afternoon")):
-            print(f"[SCHEDULER] Catch-up da parcial da tarde acionado no startup | now={now}")
-            job_send_afternoon_partial_summary()
-
-        if current_hhmm >= "23:59" and not _already_sent_summary(_partial_summary_key("night")):
-            print(f"[SCHEDULER] Catch-up da parcial da noite acionado no startup | now={now}")
-            job_send_night_partial_summary()
+        # Parciais só podem ser recuperadas dentro de uma janela curta após o horário oficial.
+        # Isso evita receber parcial da manhã/tarde à noite depois de deploy/restart.
+        for partial_turn in ("morning", "afternoon", "night"):
+            partial_key = _partial_summary_key(partial_turn)
+            if (
+                not _already_sent_summary(partial_key)
+                and _is_inside_partial_catchup_window(partial_turn, now, grace_minutes=20)
+            ):
+                print(
+                    f"[SCHEDULER] Catch-up pontual da parcial acionado no startup | "
+                    f"turn={partial_turn} | now={now}"
+                )
+                job_send_turn_partial_summary(partial_turn)
 
         job_preload_upcoming_predictions()
 
@@ -916,7 +998,9 @@ def job_check_games():
     print(f"[SCHEDULER] Rodando verificação pré-jogo: {now_local()}")
 
     try:
-        payloads = daily_service.get_30min_payloads()
+        football_payloads = daily_service.get_30min_payloads()
+        basketball_payloads = daily_service.get_basketball_30min_payloads()
+        payloads = _merge_unique_payloads(football_payloads, basketball_payloads)
         raw_payloads = len(payloads)
         payloads = _filter_payloads_prelive(payloads)
         total_payloads = len(payloads)
@@ -1213,6 +1297,20 @@ def start_scheduler():
         misfire_grace_time=1800,
     )
 
+
+
+    scheduler.add_job(
+        job_send_basketball_daily_summary,
+        "cron",
+        hour=10,
+        minute=30,
+        id="job_send_basketball_daily_summary",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=1800,
+    )
+
     scheduler.add_job(
         job_send_morning_summary,
         "cron",
@@ -1229,7 +1327,7 @@ def start_scheduler():
         job_send_afternoon_summary,
         "cron",
         hour=12,
-        minute=0,
+        minute=30,
         id="job_send_afternoon_summary",
         replace_existing=True,
         max_instances=1,
@@ -1253,24 +1351,24 @@ def start_scheduler():
         job_send_morning_partial_summary,
         "cron",
         hour=12,
-        minute=0,
+        minute=29,
         id="job_send_morning_partial_summary",
         replace_existing=True,
         max_instances=1,
         coalesce=True,
-        misfire_grace_time=1800,
+        misfire_grace_time=1200,
     )
 
     scheduler.add_job(
         job_send_afternoon_partial_summary,
         "cron",
-        hour=18,
-        minute=0,
+        hour=17,
+        minute=59,
         id="job_send_afternoon_partial_summary",
         replace_existing=True,
         max_instances=1,
         coalesce=True,
-        misfire_grace_time=1800,
+        misfire_grace_time=1200,
     )
 
     scheduler.add_job(

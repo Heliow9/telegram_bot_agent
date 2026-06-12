@@ -147,3 +147,57 @@ LEAGUES = [
         "priority": 3,
     },
 ]
+
+BASKETBALL_LEAGUES = [
+    {
+        "key": "basketball_nba",
+        "name": "NBA",
+        "display_name": "EUA - NBA",
+        "id": "4387",
+        "season": "2025-2026",
+        "priority": 1,
+        "sport": "Basketball",
+        "country": "United States",
+        "aliases": [
+            "NBA",
+            "National Basketball Association",
+            "EUA - NBA",
+        ],
+    },
+    {
+        "key": "basketball_g_league",
+        "name": "NBA G League",
+        "display_name": "EUA - NBA G League",
+        "id": "4388",
+        "season": "2025-2026",
+        "priority": 2,
+        "sport": "Basketball",
+        "country": "United States",
+        "aliases": [
+            "NBA G League",
+            "G League",
+            "NBA Development League",
+        ],
+    },
+    {
+        "key": "basketball_ncaa_m",
+        "name": "NCAA Division I Basketball Mens",
+        "display_name": "EUA - NCAA Basketball Masculino",
+        "id": "4607",
+        "season": "2025-2026",
+        "priority": 2,
+        "sport": "Basketball",
+        "country": "United States",
+        "aliases": [
+            "NCAA Division I Basketball Mens",
+            "NCAA Basketball",
+            "NCAA Men's Basketball",
+            "NCAA Mens Basketball",
+        ],
+    },
+]
+
+SPORT_LABELS = {
+    "soccer": "Futebol",
+    "basketball": "Basquete",
+}

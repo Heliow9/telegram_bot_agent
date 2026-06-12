@@ -19,6 +19,9 @@ LEAGUE_EMOJIS = {
     "Bundesliga": "🇩🇪",
     "Copa do Mundo": "🌎",
     "Amistosos Internacionais": "🌐",
+    "EUA - NBA": "🏀",
+    "EUA - NBA G League": "🏀",
+    "EUA - NCAA Basketball Masculino": "🏀",
 }
 
 
@@ -122,6 +125,8 @@ def _pick_label(pick: str) -> str:
         "1X": "Casa ou Empate",
         "X2": "Empate ou Fora",
         "12": "Casa ou Fora",
+        "OVER": "Mais pontos",
+        "UNDER": "Menos pontos",
     }
     return mapping.get(pick, pick)
 
@@ -132,6 +137,8 @@ def _market_type_label(market_type: str) -> str:
     mapping = {
         "1x2": "1X2",
         "double_chance": "Dupla Hipótese",
+        "winner": "Vencedor",
+        "total_points": "Total de Pontos",
     }
     return mapping.get(market_type, market_type or "1X2")
 
@@ -480,7 +487,7 @@ def format_prediction_message(payload: dict) -> str:
         "📊 *ANÁLISE PRÉ\\-JOGO*",
         "",
         f"{emoji} *{_md(league_name)}*",
-        f"⚽ *{_md(home_team)} x {_md(away_team)}*",
+        f"🏟️ *{_md(home_team)} x {_md(away_team)}*",
         f"🕒 {_md(local_date)} • {_md(local_time)}",
         "",
     ]
@@ -532,7 +539,7 @@ def format_best_pick(payload: dict) -> str:
         "🔥 *APOSTA MAIS FORTE DO DIA*",
         "",
         f"{emoji} *{_md(league_name)}*",
-        f"⚽ *{_md(home_team)} x {_md(away_team)}*",
+        f"🏟️ *{_md(home_team)} x {_md(away_team)}*",
         f"🕒 {_md(local_time)}",
         "",
     ]
@@ -564,6 +571,19 @@ def format_best_pick(payload: dict) -> str:
         lines.append("✅ *Value bet detectado*")
 
     return "\n".join(lines)
+
+
+
+def _format_basketball_total_compact(analysis: dict | None = None) -> str:
+    analysis = analysis or {}
+    pick = str(analysis.get("total_points_pick") or "").upper().strip()
+    line = _safe_float(analysis.get("total_points_line"))
+    probability = _safe_float(analysis.get("total_points_probability"))
+    if not pick or line is None:
+        return ""
+    label = "Mais" if pick == "OVER" else "Menos" if pick == "UNDER" else pick
+    suffix = f" • Prob: *{probability:.0%}*" if probability is not None else ""
+    return f"🏀 Total pontos: *{_md(label)} de {line:.1f}*{suffix}"
 
 
 def format_top_ranking(payloads: list[dict], top_n: int = 5) -> str:
@@ -615,6 +635,10 @@ def format_top_ranking(payloads: list[dict], top_n: int = 5) -> str:
         if strategy:
             lines.append(strategy)
 
+        basketball_total = _format_basketball_total_compact(analysis)
+        if basketball_total:
+            lines.append(basketball_total)
+
         if extras:
             lines.append(" • ".join(extras))
 
@@ -650,16 +674,23 @@ def format_league_summary(league_name: str, payloads: list[dict]) -> str:
         market_odds = _get_pick_market_odds(analysis)
         edge = _get_pick_edge(analysis)
 
-        lines.append(f"⚽ *{_md(home_team)} x {_md(away_team)}*{value_flag}")
+        sport_icon = "🏀" if str((payload.get("fixture") or {}).get("sport") or (payload.get("league") or {}).get("sport") or "").lower() == "basketball" else "⚽"
+        lines.append(f"{sport_icon} *{_md(home_team)} x {_md(away_team)}*{value_flag}")
         lines.append(f"🕒 {_md(_fixture_local_time(fixture))}")
         lines.append(
             f"🎯 *{_md(_pick_label(final_pick))}* \\| "
             f"📦 *{_md(_market_type_label(market_type))}* \\| "
             f"🔒 *{_md(_confidence_label(analysis.get('confidence')))}*"
         )
-        lines.append(
-            f"📈 1X2: {_get_main_probabilities_text(analysis)}"
-        )
+        if str((fixture.get("sport") or (payload.get("league") or {}).get("sport") or "").lower()) == "basketball":
+            lines.append(
+                f"📈 Vencedor: Casa {float(analysis.get('prob_home') or 0):.0%} • "
+                f"Fora {float(analysis.get('prob_away') or 0):.0%}"
+            )
+        else:
+            lines.append(
+                f"📈 1X2: {_get_main_probabilities_text(analysis)}"
+            )
 
         if _has_double_chance_probabilities(analysis):
             lines.append(
@@ -671,6 +702,10 @@ def format_league_summary(league_name: str, payloads: list[dict]) -> str:
         strategy = _format_strategy_compact(analysis)
         if strategy:
             lines.append(strategy)
+
+        basketball_total = _format_basketball_total_compact(analysis)
+        if basketball_total:
+            lines.append(basketball_total)
 
         extras = []
         if market_odds is not None:
@@ -707,7 +742,7 @@ def format_result_message(item: dict, ai_summary: str | None = None) -> str:
         f"{status_emoji} *{status_label}*",
         "",
         f"🏆 *{_md(league)}*",
-        f"⚽ *{_md(home_team)} x {_md(away_team)}*",
+        f"🏟️ *{_md(home_team)} x {_md(away_team)}*",
         f"📊 *Placar final:* {_md(home_score)} x {_md(away_score)}",
         f"🏁 *Resultado:* {_md(_result_label(real_result, home_team, away_team))}",
         "",

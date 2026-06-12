@@ -107,6 +107,16 @@ def _build_clv_snapshot(odds: Optional[PredictionOdds]) -> Optional[Dict]:
     }
 
 
+
+def _sport_from_prediction(prediction: Prediction) -> str:
+    key = str(prediction.league_key or "").lower()
+    if key.startswith("basketball_"):
+        return "basketball"
+    features = _safe_json_loads(prediction.features_json) or {}
+    sport = str(features.get("sport") or "").strip().lower()
+    return sport or "soccer"
+
+
 def _serialize_prediction_row(
     prediction: Prediction,
     odds: Optional[PredictionOdds] = None,
@@ -114,6 +124,7 @@ def _serialize_prediction_row(
     return {
         "saved_at": prediction.created_at.isoformat() if prediction.created_at else None,
         "league": prediction.league_name,
+        "sport": _sport_from_prediction(prediction),
         "fixture_id": prediction.fixture_id,
         "home_team": prediction.home_team,
         "away_team": prediction.away_team,

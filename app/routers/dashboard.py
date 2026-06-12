@@ -268,12 +268,28 @@ def _odds_movement_direction(prediction: Prediction):
         return "stable"
     return "up" if movement > 0 else "down"
 
+
+def _sport_from_prediction(prediction: Prediction) -> str:
+    key = str(prediction.league_key or "").lower()
+    if key.startswith("basketball_"):
+        return "basketball"
+    try:
+        features = json.loads(prediction.features_json or "{}")
+        sport = str(features.get("sport") or "").strip().lower()
+        if sport:
+            return sport
+    except Exception:
+        pass
+    return "soccer"
+
+
 def _serialize_prediction(prediction: Prediction):
     return {
         "id": prediction.id,
         "fixture_id": prediction.fixture_id,
         "league_key": prediction.league_key,
         "league_name": prediction.league_name,
+        "sport": _sport_from_prediction(prediction),
         "home_team": prediction.home_team,
         "away_team": prediction.away_team,
         "match_date": prediction.match_date,
@@ -326,6 +342,7 @@ def _payload_to_dashboard_item(payload: dict):
 
     return {
         "fixture_id": fixture.get("id"),
+        "sport": analysis.get("sport") or fixture.get("sport") or league.get("sport") or "soccer",
         "league_key": league.get("key") or fixture.get("league_key"),
         "league_name": league.get("display_name") or fixture.get("league"),
         "home_team": fixture.get("home_team"),
@@ -356,6 +373,10 @@ def _payload_to_dashboard_item(payload: dict):
         "safe_pick": analysis.get("safe_pick"),
         "safe_probability": analysis.get("safe_probability"),
         "safe_market_label": analysis.get("safe_market_label"),
+        "total_points_line": analysis.get("total_points_line"),
+        "total_points_pick": analysis.get("total_points_pick"),
+        "total_points_probability": analysis.get("total_points_probability"),
+        "total_points_label": analysis.get("total_points_label"),
         "edge": value_bet.get("edge"),
         "has_value_bet": bool(value_bet.get("has_value")),
         "market_odds": value_bet.get("market_odds"),
@@ -743,11 +764,6 @@ def market_overview(
             movement_direction = "stable"
 
         fair_odds = None
-        
-        
-        
-        
-        
 
         try:
             pick = (prediction.pick or "").upper()
@@ -915,14 +931,25 @@ def daily_ranking(
     current_user=Depends(get_current_user),
     date: str | None = Query(default=None),
     limit: int = Query(default=50, le=100),
+    sport: str = Query(default="soccer"),
 ):
     service = DailyLeaguesService()
-    payloads = service.get_all_day_payloads(date)
+    selected_sport = str(sport or "soccer").strip().lower()
+    if selected_sport in {"basketball", "basquete"}:
+        payloads = service.get_basketball_all_day_payloads(date)
+    elif selected_sport in {"all", "todos"}:
+        payloads = service.analysis_service.sort_by_best_picks(
+            service.get_all_day_payloads(date) + service.get_basketball_all_day_payloads(date)
+        )
+    else:
+        payloads = service.get_all_day_payloads(date)
     items = [_payload_to_dashboard_item(payload) for payload in payloads[:limit]]
 
     by_turn = Counter(_turn_from_time(item.get("match_time")) for item in items)
     by_market = Counter(str(item.get("market_type") or "1x2") for item in items)
     by_model = Counter(str(item.get("model_source") or "heuristic") for item in items)
+    by_sport = Counter(str(item.get("sport") or "soccer") for item in items)
+    by_league = Counter(str(item.get("league_name") or "-") for item in items)
 
     return {
         "items": items,
@@ -933,9 +960,26 @@ def daily_ranking(
             "by_turn": dict(by_turn),
             "by_market": dict(by_market),
             "by_model_source": dict(by_model),
+            "by_sport": dict(by_sport),
+            "by_league": dict(by_league),
+            "sport": selected_sport,
             "min_daily_target": 5,
         },
     }
+
+
+@router.get("/basketball/daily-ranking")
+def basketball_daily_ranking(
+    current_user=Depends(get_current_user),
+    date: str | None = Query(default=None),
+    limit: int = Query(default=50, le=100),
+):
+    return daily_ranking(
+        current_user=current_user,
+        date=date,
+        limit=limit,
+        sport="basketball",
+    )
 
 
 @router.get("/delivery-quality")
@@ -957,6 +1001,7 @@ def delivery_quality(
     by_market = Counter(str(row.market_type or "1x2") for row in rows)
     by_model = Counter(str(row.model_source or "heuristic") for row in rows)
     by_status = Counter(str(row.status or "pending") for row in rows)
+    by_sport = Counter(_sport_from_prediction(row) for row in rows)
 
     sent_summaries_path = Path("data/sent_summaries.json")
     sent_alerts_path = Path("data/sent_alerts.json")
@@ -982,6 +1027,7 @@ def delivery_quality(
         "by_market": dict(by_market),
         "by_model_source": dict(by_model),
         "by_status": dict(by_status),
+        "by_sport": dict(by_sport),
         "last_predictions": [_serialize_prediction(row) for row in rows[:20]],
         "generated_at": datetime.now(tz).isoformat(),
     }

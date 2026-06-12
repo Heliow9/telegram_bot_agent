@@ -5,6 +5,7 @@ from app.services.scheduler_service import (
     job_check_results,
     job_check_games,
     job_send_daily_top_summary,
+    job_send_basketball_daily_summary,
     job_send_morning_summary,
     job_send_afternoon_summary,
     job_send_night_summary,
@@ -40,6 +41,18 @@ def send_daily_ranking(current_user=Depends(get_current_user)):
     return {
         "success": bool(result.get("ok")),
         "message": "Ranking diário processado.",
+        "result": result,
+    }
+
+
+
+
+@router.post("/send-basketball-ranking")
+def send_basketball_ranking(current_user=Depends(get_current_user)):
+    result = job_send_basketball_daily_summary()
+    return {
+        "success": bool(result.get("ok")),
+        "message": "Ranking diário de basquete processado.",
         "result": result,
     }
 
@@ -106,3 +119,8 @@ def post_deploy_sync_alias(current_user=Depends(get_current_user)):
 @router.post("/daily-ranking")
 def daily_ranking_alias(current_user=Depends(get_current_user)):
     return send_daily_ranking(current_user=current_user)
+
+
+@router.post("/basketball-ranking")
+def basketball_ranking_alias(current_user=Depends(get_current_user)):
+    return send_basketball_ranking(current_user=current_user)

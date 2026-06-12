@@ -3,9 +3,10 @@ from zoneinfo import ZoneInfo
 from typing import List, Dict, Optional, Tuple
 import unicodedata
 
-from app.constants import LEAGUES
+from app.constants import LEAGUES, BASKETBALL_LEAGUES
 from app.services.sportsdb_api import SportsDBAPI
 from app.services.analysis_service import AnalysisService
+from app.services.basketball_analysis_service import BasketballAnalysisService
 from app.services.time_utils import event_payload_to_local_datetime
 from app.services.event_selector import (
     filter_morning_events,
@@ -35,6 +36,7 @@ class DailyLeaguesService:
     def __init__(self):
         self.api = SportsDBAPI()
         self.analysis_service = AnalysisService()
+        self.basketball_analysis_service = BasketballAnalysisService()
         self.tz = ZoneInfo("America/Recife")
 
     def _now_local(self) -> datetime:
@@ -195,12 +197,13 @@ class DailyLeaguesService:
                     )
 
             try:
-                by_sport = self.api.get_events_by_day_sport_list(date_str, sport="Soccer")
+                sport_name = str(league_meta.get("sport") or "Soccer").strip() or "Soccer"
+                by_sport = self.api.get_events_by_day_sport_list(date_str, sport=sport_name)
                 if by_sport:
                     league_filtered = [ev for ev in by_sport if self._event_matches_league(ev, league_meta)]
                     raw_events.extend(league_filtered)
                     print(
-                        f"[DAILY][SOURCE] {league_meta['display_name']} | eventsday:soccer | "
+                        f"[DAILY][SOURCE] {league_meta['display_name']} | eventsday:{sport_name.lower()} | "
                         f"data={date_str} | retornados={len(by_sport)} | liga={len(league_filtered)}"
                     )
             except Exception as e:
@@ -311,22 +314,27 @@ class DailyLeaguesService:
             return events, "Próximas horas"
         return [], selector_name
 
-    def _build_payloads_for_date(self, date_str: str, selector_name: str) -> List[Dict]:
+
+    def _build_payloads_for_date_with_leagues(self, date_str: str, selector_name: str, leagues: List[Dict], analysis_service) -> List[Dict]:
         payloads = []
-        for league_meta in sorted(LEAGUES, key=lambda x: x["priority"]):
+        for league_meta in sorted(leagues, key=lambda x: x["priority"]):
             try:
                 events = self._events_for_league_on_date(league_meta, date_str)
                 selected, label = self._select_events(events, selector_name)
                 if selected:
                     print(f"[DAILY] {label} | {league_meta['display_name']} | data={date_str} | eventos encontrados: {len(selected)}")
-                built_payloads = self.analysis_service.build_many_analyses(selected, league_meta)
+                built_payloads = analysis_service.build_many_analyses(selected, league_meta)
                 if built_payloads:
                     print(f"[DAILY] {label} | {league_meta['display_name']} | payloads gerados: {len(built_payloads)}")
                 payloads.extend(built_payloads)
             except Exception as e:
                 print(f"[DAILY] Erro {selector_name} em {league_meta['display_name']} | data={date_str}: {e}")
                 continue
-        return self.analysis_service.sort_by_best_picks(payloads)
+        return analysis_service.sort_by_best_picks(payloads)
+
+    def _build_payloads_for_date(self, date_str: str, selector_name: str) -> List[Dict]:
+        payloads = []
+        return self._build_payloads_for_date_with_leagues(date_str, selector_name, LEAGUES, self.analysis_service)
 
     def get_upcoming_payloads(self, hours: int = 48) -> List[Dict]:
         payloads = []
@@ -343,6 +351,48 @@ class DailyLeaguesService:
                 print(f"[UPCOMING] Erro em {league_meta['display_name']} | janela={hours}h: {e}")
                 continue
         return self.analysis_service.sort_by_best_picks(payloads)
+
+
+
+    def get_basketball_all_day_payloads(self, date_str: Optional[str] = None) -> List[Dict]:
+        target_date = date_str or self._today()
+        return self._build_payloads_for_date_with_leagues(
+            target_date,
+            "all_day",
+            BASKETBALL_LEAGUES,
+            self.basketball_analysis_service,
+        )
+
+    def get_basketball_upcoming_payloads(self, hours: int = 48) -> List[Dict]:
+        payloads = []
+        for league_meta in sorted(BASKETBALL_LEAGUES, key=lambda x: x["priority"]):
+            try:
+                events = self._events_for_league_in_window(league_meta, hours=hours)
+                if events:
+                    print(f"[BASKET][UPCOMING] {league_meta['display_name']} | eventos encontrados: {len(events)}")
+                built_payloads = self.basketball_analysis_service.build_many_analyses(events, league_meta)
+                if built_payloads:
+                    print(f"[BASKET][UPCOMING] {league_meta['display_name']} | payloads gerados: {len(built_payloads)}")
+                payloads.extend(built_payloads)
+            except Exception as e:
+                print(f"[BASKET][UPCOMING] Erro em {league_meta['display_name']} | janela={hours}h: {e}")
+                continue
+        return self.basketball_analysis_service.sort_by_best_picks(payloads)
+
+    def get_basketball_30min_payloads(self) -> List[Dict]:
+        payloads = []
+        now = self._now_local()
+        end = now + timedelta(minutes=30)
+        for league_meta in sorted(BASKETBALL_LEAGUES, key=lambda x: x["priority"]):
+            try:
+                events = self._events_for_league_in_window(league_meta, hours=2)
+                selected = [ev for ev in events if self._is_future_window(ev, now, end)]
+                built_payloads = self.basketball_analysis_service.build_many_analyses(selected, league_meta)
+                payloads.extend(built_payloads)
+            except Exception as e:
+                print(f"[BASKET] Erro 30min móvel em {league_meta['display_name']}: {e}")
+        return self.basketball_analysis_service.sort_by_best_picks(payloads)
+
 
     def get_all_day_payloads(self, date_str: Optional[str] = None) -> List[Dict]:
         target_date = date_str or self._today()
