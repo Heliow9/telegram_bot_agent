@@ -743,6 +743,9 @@ def market_overview(
             movement_direction = "stable"
 
         fair_odds = None
+        
+        
+        
 
         try:
             pick = (prediction.pick or "").upper()
