@@ -220,9 +220,15 @@ class MarketSelectorService:
         bonus = 0.0
 
         if market_type == "1x2":
-            bonus += 0.02
+            # 1X2 e dupla hipótese têm escalas diferentes de probabilidade.
+            # Sem essa normalização a dupla hipótese dominava quase sempre.
+            bonus += 0.18
         elif market_type == "double_chance":
-            bonus += 0.01
+            bonus -= 1.15
+            if probability >= 0.74:
+                bonus += 0.35
+            elif probability >= 0.69:
+                bonus += 0.18
 
         if not odds_available:
             bonus -= 0.015
@@ -450,18 +456,42 @@ class MarketSelectorService:
         ]
         target_pool = valid_candidates if valid_candidates else all_candidates
 
-        ranked = sorted(
-            target_pool,
-            key=lambda item: self._rank_candidate(
+        def candidate_score(item):
+            return self._rank_candidate(
                 item,
                 features=features,
                 probs=probs,
                 historical_context=historical_context,
-            ),
+            )
+
+        ranked_1x2 = sorted(candidates_1x2, key=candidate_score, reverse=True)
+        ranked_dc = sorted(candidates_dc, key=candidate_score, reverse=True)
+
+        main_probs = sorted(
+            [self._safe_float(probs.get("prob_home")), self._safe_float(probs.get("prob_draw")), self._safe_float(probs.get("prob_away"))],
             reverse=True,
         )
+        main_margin = (main_probs[0] - main_probs[1]) if len(main_probs) >= 2 else 0.0
 
-        best = ranked[0]
+        # Quando existe uma direção clara no 1X2, o bot volta a entregar 1/X/2.
+        # Quando o jogo é equilibrado, mantém dupla hipótese como proteção.
+        forced_best = None
+        if ranked_1x2:
+            top_1x2 = ranked_1x2[0]
+            top_1x2_prob = self._safe_float(top_1x2.get("probability"))
+            top_1x2_valid = self._passes_minimum_rules(top_1x2, features=features, probs=probs)
+            if top_1x2_valid and top_1x2_prob >= 0.52 and (main_margin >= 0.075 or top_1x2_prob >= 0.56):
+                forced_best = top_1x2
+
+        if forced_best is None and ranked_dc:
+            top_dc = ranked_dc[0]
+            top_dc_prob = self._safe_float(top_dc.get("probability"))
+            if top_dc_prob >= 0.70:
+                forced_best = top_dc
+
+        ranked = sorted(target_pool, key=candidate_score, reverse=True)
+
+        best = forced_best or ranked[0]
         probability = self._safe_float(best.get("probability"))
         edge = best.get("edge")
         market_type = str(best.get("market_type") or "")
@@ -491,6 +521,9 @@ class MarketSelectorService:
                 key=lambda item: item["ranking_score"],
                 reverse=True,
             ),
+            "primary_1x2": ranked_1x2[0] if ranked_1x2 else None,
+            "safe_double_chance": ranked_dc[0] if ranked_dc else None,
+            "main_margin": round(main_margin, 4),
         }
 
     def build_analysis_payload(
@@ -521,6 +554,9 @@ class MarketSelectorService:
             "12": self._fair_odds(prob_home + prob_away),
         }
 
+        primary_1x2 = decision.get("primary_1x2") or {}
+        safe_double_chance = decision.get("safe_double_chance") or {}
+
         return {
             "prob_home": round(prob_home, 4),
             "prob_draw": round(prob_draw, 4),
@@ -531,6 +567,12 @@ class MarketSelectorService:
             "confidence": decision.get("confidence", "baixa"),
             "best_probability": decision.get("probability", 0.0),
             "model_source": model_source,
+            "primary_1x2_pick": primary_1x2.get("suggested_pick"),
+            "primary_1x2_probability": primary_1x2.get("probability"),
+            "safe_pick": safe_double_chance.get("suggested_pick"),
+            "safe_probability": safe_double_chance.get("probability"),
+            "safe_market_label": safe_double_chance.get("label"),
+            "main_margin": decision.get("main_margin"),
             "features": features or {},
             "historical_context": historical_context or {},
             "odds": {

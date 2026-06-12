@@ -1,25 +1,28 @@
 {
-  "trained_at": "2026-04-17T00:32:37.449083-03:00",
-  "rows": 20,
-  "train_rows": 15,
-  "test_rows": 5,
+  "trained_at": "2026-06-12T19:49:34.103524-03:00",
+  "market_type": "1x2",
+  "rows": 89,
+  "train_rows": 66,
+  "test_rows": 23,
   "classes": [
     "1",
-    "2"
+    "2",
+    "X"
   ],
   "class_distribution": {
-    "1": 12,
-    "2": 7,
-    "X": 1
+    "1": 38,
+    "2": 32,
+    "X": 19
   },
   "train_class_distribution": {
-    "1": 9,
-    "2": 6
+    "1": 28,
+    "2": 24,
+    "X": 14
   },
   "test_class_distribution": {
-    "1": 3,
-    "X": 1,
-    "2": 1
+    "1": 10,
+    "2": 8,
+    "X": 5
   },
   "features": [
     "home_form_score",
@@ -55,7 +58,9 @@
     "venue_sample_away"
   ],
   "features_count": 31,
-  "accuracy": 0.4,
-  "log_loss": null,
-  "used_stratify": false
+  "accuracy": 0.3913,
+  "log_loss": 1.143,
+  "used_stratify": true,
+  "validation_strategy": "holdout_stratified",
+  "rare_class_full_train": false
 }

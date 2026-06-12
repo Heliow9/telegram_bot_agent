@@ -84,40 +84,64 @@ class AnalysisService:
 
     def _get_dynamic_ml_weight(self) -> float:
         metadata = self.ml_model.get_metadata() if self.ml_model else {}
-        rows = int(metadata.get("rows", 0) or 0)
-        accuracy = float(metadata.get("accuracy", 0.0) or 0.0)
-        classes = metadata.get("classes") or []
-
-        # Evita que um modelo muito pequeno ou desequilibrado puxe a decisão real.
-        if rows < 60 or len(classes) < 3:
+        if not self.ml_model or not self.ml_model.is_available():
             return 0.0
-        if accuracy < 0.48:
-            return 0.0
-        if rows < 120:
-            return 0.18
-        if rows < 220:
-            return 0.28
-        if rows < 400:
-            return 0.38
-        if accuracy >= 0.58:
-            return 0.62
-        if accuracy >= 0.54:
-            return 0.48
-        return 0.32
 
-    def _blend_probabilities(self, heuristic_analysis: Dict, ml_probs: Optional[Dict[str, float]], features: Optional[Dict] = None) -> tuple[Dict[str, float], str]:
+        try:
+            rows = int(metadata.get("rows", 0) or 0)
+        except (TypeError, ValueError):
+            rows = 0
+        try:
+            accuracy = float(metadata.get("accuracy", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            accuracy = 0.0
+
+        classes = metadata.get("classes") or getattr(self.ml_model, "classes_", None) or []
+        if len(classes) < 2:
+            return 0.0
+
+        # Antes o ML era zerado com rows < 60, classes < 3 ou accuracy < 0.48.
+        # Isso fazia o bot ficar preso em HEURISTIC. Agora o ML entra como assistente
+        # conservador mesmo em base pequena, sem dominar a decisão.
+        if rows <= 0:
+            weight = 0.10
+        elif rows < 20:
+            weight = 0.08
+        elif rows < 60:
+            weight = 0.14
+        elif rows < 120:
+            weight = 0.22
+        elif rows < 220:
+            weight = 0.32
+        elif rows < 400:
+            weight = 0.42
+        else:
+            weight = 0.52
+
+        if len(classes) < 3:
+            weight *= 0.75
+        if accuracy and accuracy < 0.34:
+            weight *= 0.75
+        elif accuracy >= 0.50:
+            weight += 0.06
+        elif accuracy >= 0.44:
+            weight += 0.03
+
+        return round(min(max(weight, 0.06), 0.62), 4)
+
+    def _blend_probabilities(self, heuristic_analysis: Dict, ml_probs: Optional[Dict[str, float]], features: Optional[Dict] = None) -> tuple[Dict[str, float], str, float]:
         heuristic_probs = self._normalize_probs({
             "1": heuristic_analysis.get("prob_home", 0.0),
             "X": heuristic_analysis.get("prob_draw", 0.0),
             "2": heuristic_analysis.get("prob_away", 0.0),
         })
         if not ml_probs:
-            return heuristic_probs, "heuristic"
+            return heuristic_probs, "heuristic", 0.0
 
         ml_probs = self._normalize_probs(ml_probs)
         ml_weight = self._get_dynamic_ml_weight()
         if ml_weight <= 0:
-            return heuristic_probs, "heuristic"
+            return heuristic_probs, "heuristic", 0.0
 
         heuristic_weight = 1.0 - ml_weight
         blended = {
@@ -134,7 +158,7 @@ class AnalysisService:
         if draw_profile >= 0.28 or balanced >= 1 or low_scoring >= 1:
             blended["X"] += 0.015
 
-        return self._normalize_probs(blended), ("ml_blend" if ml_weight > 0 else "heuristic")
+        return self._normalize_probs(blended), ("ml_blend" if ml_weight > 0 else "heuristic"), ml_weight
 
     def _confidence_from_probability(self, best_probability: float, raw_ml_probs: Optional[Dict[str, float]], features: Dict) -> str:
         confidence_score = 0
@@ -172,13 +196,26 @@ class AnalysisService:
         away_team = match.get("strAwayTeam")
         home_team_id = match.get("idHomeTeam")
         away_team_id = match.get("idAwayTeam")
-        if not home_team or not away_team or not home_team_id or not away_team_id:
+        if not home_team or not away_team:
             return None
 
-        home_general = self._get_team_events("general", home_team, str(home_team_id), 10)
-        away_general = self._get_team_events("general", away_team, str(away_team_id), 10)
-        home_home = self._get_team_events("home", home_team, str(home_team_id), 5)
-        away_away = self._get_team_events("away", away_team, str(away_team_id), 5)
+        # Amistosos e algumas copas chegam sem idHomeTeam/idAwayTeam. Antes isso
+        # descartava o jogo inteiro, reduzindo a grade para 1 ou 2 palpites.
+        # Agora mantém o jogo com amostra neutra e confiança mais conservadora.
+        if home_team_id and away_team_id:
+            home_general = self._get_team_events("general", home_team, str(home_team_id), 10)
+            away_general = self._get_team_events("general", away_team, str(away_team_id), 10)
+            home_home = self._get_team_events("home", home_team, str(home_team_id), 5)
+            away_away = self._get_team_events("away", away_team, str(away_team_id), 5)
+        else:
+            print(
+                f"[ANALYSIS][FALLBACK] Jogo sem id de time; usando base neutra | "
+                f"{home_team} x {away_team} | idEvent={match.get('idEvent')}"
+            )
+            home_general = []
+            away_general = []
+            home_home = []
+            away_away = []
 
         home_general_form = extract_team_form(home_general, home_team)
         away_general_form = extract_team_form(away_general, away_team)
@@ -215,7 +252,7 @@ class AnalysisService:
         )
 
         raw_ml_probs = self.ml_model.predict_proba(features)
-        probs, model_source = self._blend_probabilities(heuristic_analysis=heuristic_analysis, ml_probs=raw_ml_probs, features=features)
+        probs, model_source, ml_weight = self._blend_probabilities(heuristic_analysis=heuristic_analysis, ml_probs=raw_ml_probs, features=features)
         odds = self.cache.remember(
             f"odds:{league_meta.get('key')}:{match.get('idEvent') or home_team + '-' + away_team}:{match.get('dateEvent', '')}",
             lambda: self.odds_service.get_match_odds(
@@ -252,6 +289,7 @@ class AnalysisService:
         )
         decision_payload["confidence"] = decision_payload.get("confidence") or fallback_confidence
         decision_payload["raw_ml_probs"] = raw_ml_probs
+        decision_payload["ml_weight"] = ml_weight
         decision_payload["main_market_pick"] = max({"1": probs["1"], "X": probs["X"], "2": probs["2"]}, key=lambda k: {"1": probs["1"], "X": probs["X"], "2": probs["2"]}[k])
         decision_payload["main_market_probability"] = max(probs.values())
         decision_payload["prob_1x"] = round(probs["1"] + probs["X"], 4)

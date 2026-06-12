@@ -4,14 +4,13 @@ import json
 
 import pandas as pd
 
-from app.db import SessionLocal
-from app.models import Prediction
 from app.services.predictor import extract_team_form, get_table_position
 from app.services.ml_feature_builder import build_match_features
 from app.services.sportsdb_api import SportsDBAPI
 
 
 TRAINING_DATA_PATH = Path("data/historical_training_matches.csv")
+LEGACY_PREDICTIONS_PATH = Path("data/predictions_log.json")
 
 
 class TrainingDatasetService:
@@ -179,7 +178,7 @@ class TrainingDatasetService:
             league_priority=features.get("league_priority", 99),
         )
 
-    def build_training_row_from_prediction_db(self, item: Prediction) -> Optional[Dict]:
+    def build_training_row_from_prediction_db(self, item) -> Optional[Dict]:
         if item.status not in ("hit", "miss"):
             return None
 
@@ -214,6 +213,88 @@ class TrainingDatasetService:
 
         return row
 
+
+    def build_training_row_from_prediction_json(self, item: Dict) -> Optional[Dict]:
+        status = str(item.get("status") or "").strip().lower()
+        if status not in ("hit", "miss"):
+            return None
+
+        result = str(item.get("result") or "").strip().upper()
+        if result not in ("1", "X", "2"):
+            return None
+
+        fixture_id = str(item.get("fixture_id") or "").strip()
+        if not fixture_id:
+            return None
+
+        features = item.get("features")
+        if not isinstance(features, dict) or not features:
+            return None
+
+        if not self._features_are_new_schema(features):
+            features = self._rebuild_features_from_legacy_prediction(features)
+
+        row = {
+            **features,
+            "target": result,
+            "league": item.get("league"),
+            "fixture_id": fixture_id,
+            "home_team": item.get("home_team"),
+            "away_team": item.get("away_team"),
+            "home_score": item.get("home_score"),
+            "away_score": item.get("away_score"),
+        }
+        return row
+
+    def append_legacy_json_predictions_to_dataset(self) -> int:
+        if not LEGACY_PREDICTIONS_PATH.exists():
+            print("[TRAINING] predictions_log.json não encontrado para incremento legado.")
+            return 0
+
+        try:
+            raw = json.loads(LEGACY_PREDICTIONS_PATH.read_text(encoding="utf-8"))
+        except Exception as e:
+            print(f"[TRAINING] Erro lendo predictions_log.json: {e}")
+            return 0
+
+        if not isinstance(raw, list):
+            return 0
+
+        rows = []
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            row = self.build_training_row_from_prediction_json(item)
+            if row:
+                rows.append(row)
+
+        if not rows:
+            print("[TRAINING] Nenhuma previsão resolvida no JSON legado para adicionar.")
+            return 0
+
+        before_count = 0
+        if TRAINING_DATA_PATH.exists():
+            try:
+                before_count = len(pd.read_csv(TRAINING_DATA_PATH))
+            except Exception:
+                before_count = 0
+
+        self.save_rows(rows)
+
+        after_count = before_count
+        if TRAINING_DATA_PATH.exists():
+            try:
+                after_count = len(pd.read_csv(TRAINING_DATA_PATH))
+            except Exception:
+                pass
+
+        added = max(0, after_count - before_count)
+        print(
+            f"[TRAINING] Incremento JSON legado concluído | "
+            f"linhas_processadas={len(rows)} | novas={added}"
+        )
+        return added
+
     def save_rows(self, rows: List[Dict]):
         if not rows:
             print("[TRAINING] Nenhuma linha para salvar.")
@@ -240,6 +321,9 @@ class TrainingDatasetService:
         print(f"[TRAINING] Dataset salvo em {TRAINING_DATA_PATH} com {len(df)} linhas")
 
     def append_resolved_predictions_to_dataset(self) -> int:
+        from app.db import SessionLocal
+        from app.models import Prediction
+
         db = SessionLocal()
         try:
             items = (

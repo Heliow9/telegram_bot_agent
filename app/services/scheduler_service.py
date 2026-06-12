@@ -53,6 +53,8 @@ training_job_running = False
 ALERT_STORE_PATH = Path("data/sent_alerts.json")
 RESULT_STORE_PATH = Path("data/sent_results.json")
 SUMMARY_STORE_PATH = Path("data/sent_summaries.json")
+MIN_DAILY_RANKING_ITEMS = 5
+DAILY_RANKING_TOP_N = 10
 
 
 def _claim_json_key(path: Path, key: str) -> bool:
@@ -529,6 +531,8 @@ def _send_ranked_summary(payloads: list[dict], period_label: str):
         "Turquia Super Lig",
         "Libertadores",
         "Copa Sul-Americana",
+        "Copa do Mundo",
+        "Amistosos Internacionais",
     ]
 
     for league_name in desired_order:
@@ -542,6 +546,79 @@ def _send_ranked_summary(payloads: list[dict], period_label: str):
         print(f"[SCHEDULER] Resumo enviado para liga {league_name}: {result}")
 
     return {"ok": True, "sent": len(payloads)}
+
+
+
+
+def _payload_unique_key(payload: dict) -> str:
+    fixture = (payload or {}).get("fixture") or {}
+    return str(fixture.get("id") or f"{fixture.get('home_team')}|{fixture.get('away_team')}|{fixture.get('local_date')}|{fixture.get('local_time')}").strip()
+
+
+def _merge_unique_payloads(*groups: list[dict]) -> list[dict]:
+    merged = []
+    seen = set()
+    for group in groups:
+        for payload in group or []:
+            key = _payload_unique_key(payload)
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            merged.append(payload)
+    return merged
+
+
+def job_send_daily_top_summary():
+    """Envia ranking consolidado do dia para evitar dias com só 1 ou 2 palpites."""
+    started = _job_log_start("job_send_daily_top_summary")
+    today = now_local().strftime("%Y-%m-%d")
+    summary_key = f"{today}_daily_top"
+
+    if _already_sent_summary(summary_key):
+        _job_log_end("job_send_daily_top_summary", started, sent=False, reason="already_sent")
+        return {"ok": False, "sent": 0, "reason": "already_sent"}
+
+    try:
+        payloads = daily_service.get_all_day_payloads(today)
+        payloads = _filter_payloads_future(payloads, "daily_top", min_lead_minutes=1)
+
+        if len(payloads) < MIN_DAILY_RANKING_ITEMS:
+            upcoming = daily_service.get_upcoming_payloads(hours=36)
+            upcoming = _filter_payloads_future(upcoming, "daily_top_backfill", min_lead_minutes=1)
+            payloads = daily_service.analysis_service.sort_by_best_picks(
+                _merge_unique_payloads(payloads, upcoming)
+            )
+
+        if not payloads:
+            _job_log_end("job_send_daily_top_summary", started, success=True, payloads=0, sent=False, retryable=True)
+            return {"ok": False, "sent": 0, "reason": "no_future_payloads"}
+
+        if not _claim_json_key(SUMMARY_STORE_PATH, summary_key):
+            _job_log_end("job_send_daily_top_summary", started, sent=False, reason="already_sent_or_claimed")
+            return {"ok": False, "sent": 0, "reason": "already_sent_or_claimed"}
+
+        _persist_payloads(payloads, "ranking_diario")
+
+        best_result = telegram.send_message(format_best_pick(payloads[0]))
+        ranking_result = telegram.send_message(format_top_ranking(payloads, top_n=DAILY_RANKING_TOP_N))
+
+        ok = bool(best_result.get("ok") and ranking_result.get("ok"))
+        if not ok:
+            _release_json_key(SUMMARY_STORE_PATH, summary_key)
+
+        _job_log_end(
+            "job_send_daily_top_summary",
+            started,
+            success=ok,
+            payloads=len(payloads),
+            sent=min(len(payloads), DAILY_RANKING_TOP_N),
+        )
+        return {"ok": ok, "sent": min(len(payloads), DAILY_RANKING_TOP_N), "payloads": len(payloads)}
+    except Exception as e:
+        _release_json_key(SUMMARY_STORE_PATH, summary_key)
+        print(f"[SCHEDULER] Erro ao enviar ranking diário: {e}")
+        _job_log_end("job_send_daily_top_summary", started, success=False)
+        return {"ok": False, "sent": 0, "error": str(e)}
 
 
 def _preload_turn_payloads(payloads: list[dict], period_label: str):
@@ -1017,8 +1094,13 @@ def execute_training_job(trigger: str = "manual"):
     try:
         print(f"[TRAINING] Rodando treino ({trigger}): {now_local()}")
 
-        added = training_dataset_service.append_resolved_predictions_to_dataset()
-        print(f"[TRAINING] Dataset atualizado | novas linhas líquidas={added}")
+        added_db = training_dataset_service.append_resolved_predictions_to_dataset()
+        added_json = training_dataset_service.append_legacy_json_predictions_to_dataset()
+        added = int(added_db or 0) + int(added_json or 0)
+        print(
+            f"[TRAINING] Dataset atualizado | novas linhas líquidas={added} "
+            f"(db={added_db}, json={added_json})"
+        )
 
         train_result = ml_training_service.train()
 
@@ -1116,6 +1198,19 @@ def start_scheduler():
             "live_monitor_interval_seconds",
             settings.live_monitor_interval_seconds,
         )
+    )
+
+
+    scheduler.add_job(
+        job_send_daily_top_summary,
+        "cron",
+        hour=7,
+        minute=30,
+        id="job_send_daily_top_summary",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=1800,
     )
 
     scheduler.add_job(

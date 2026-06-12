@@ -1,6 +1,8 @@
 from datetime import datetime, time, timedelta
 from zoneinfo import ZoneInfo
 from pathlib import Path
+import json
+from collections import Counter, defaultdict
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
@@ -13,6 +15,7 @@ from app.schemas import PredictionListResponse
 from app.deps import get_current_user
 from app.services.ml_model_service import MLModelService
 from app.services.performance_tuning_service import PerformanceTuningService
+from app.services.daily_leagues_service import DailyLeaguesService
 
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
@@ -197,33 +200,41 @@ def _estimate_effective_ml_weight(metadata: dict) -> float:
     except (TypeError, ValueError):
         log_loss = None
 
-    weight = 0.0
+    classes = metadata.get("classes") or []
+    if len(classes) < 2:
+        return 0.0
 
-    if rows >= 30:
+    if rows <= 0:
         weight = 0.10
-    if rows >= 60:
-        weight = 0.18
-    if rows >= 100:
-        weight = 0.25
-    if rows >= 200:
-        weight = 0.35
-    if rows >= 400:
-        weight = 0.45
+    elif rows < 20:
+        weight = 0.08
+    elif rows < 60:
+        weight = 0.14
+    elif rows < 120:
+        weight = 0.22
+    elif rows < 220:
+        weight = 0.32
+    elif rows < 400:
+        weight = 0.42
+    else:
+        weight = 0.52
 
-    if accuracy >= 0.38:
-        weight += 0.05
-    if accuracy >= 0.42:
-        weight += 0.05
-    if accuracy >= 0.48:
-        weight += 0.05
+    if len(classes) < 3:
+        weight *= 0.75
+    if accuracy and accuracy < 0.34:
+        weight *= 0.75
+    elif accuracy >= 0.50:
+        weight += 0.06
+    elif accuracy >= 0.44:
+        weight += 0.03
 
     if log_loss is not None:
         if log_loss <= 1.20:
-            weight += 0.03
+            weight += 0.02
         if log_loss <= 1.05:
-            weight += 0.03
+            weight += 0.02
 
-    return round(min(max(weight, 0.0), 0.65), 4)
+    return round(min(max(weight, 0.0), 0.62), 4)
 
 
 def _fair_odds_for_prediction(prediction: Prediction):
@@ -306,6 +317,69 @@ def _serialize_prediction(prediction: Prediction):
     }
 
 
+def _payload_to_dashboard_item(payload: dict):
+    fixture = payload.get("fixture") or {}
+    analysis = payload.get("analysis") or {}
+    league = payload.get("league") or {}
+    value_bet = analysis.get("value_bet") or {}
+    signal_score = analysis.get("signal_score") or {}
+
+    return {
+        "fixture_id": fixture.get("id"),
+        "league_key": league.get("key") or fixture.get("league_key"),
+        "league_name": league.get("display_name") or fixture.get("league"),
+        "home_team": fixture.get("home_team"),
+        "away_team": fixture.get("away_team"),
+        "match_date": fixture.get("local_date") or fixture.get("date"),
+        "match_time": fixture.get("local_time") or fixture.get("time"),
+        "kickoff_at": fixture.get("kickoff_local"),
+        "pick": analysis.get("suggested_pick"),
+        "market_type": analysis.get("market_type"),
+        "market_label": analysis.get("market_label"),
+        "confidence": analysis.get("confidence"),
+        "model_source": analysis.get("model_source"),
+        "ml_weight": analysis.get("ml_weight"),
+        "raw_ml_probs": analysis.get("raw_ml_probs"),
+        "prob_home": analysis.get("prob_home"),
+        "prob_draw": analysis.get("prob_draw"),
+        "prob_away": analysis.get("prob_away"),
+        "prob_1x": analysis.get("prob_1x"),
+        "prob_x2": analysis.get("prob_x2"),
+        "prob_12": analysis.get("prob_12"),
+        "best_probability": analysis.get("best_probability"),
+        "main_market_pick": analysis.get("main_market_pick"),
+        "main_market_probability": analysis.get("main_market_probability"),
+        "double_chance_pick": analysis.get("double_chance_pick"),
+        "double_chance_probability": analysis.get("double_chance_probability"),
+        "primary_1x2_pick": analysis.get("primary_1x2_pick"),
+        "primary_1x2_probability": analysis.get("primary_1x2_probability"),
+        "safe_pick": analysis.get("safe_pick"),
+        "safe_probability": analysis.get("safe_probability"),
+        "safe_market_label": analysis.get("safe_market_label"),
+        "edge": value_bet.get("edge"),
+        "has_value_bet": bool(value_bet.get("has_value")),
+        "market_odds": value_bet.get("market_odds"),
+        "fair_odds": value_bet.get("fair_odds"),
+        "signal_score": signal_score.get("score"),
+        "signal_grade": signal_score.get("grade"),
+    }
+
+
+def _turn_from_time(value: str | None) -> str:
+    raw = str(value or "").strip()
+    try:
+        hour = int(raw[:2])
+    except Exception:
+        return "sem_hora"
+    if 8 <= hour <= 11:
+        return "manhã"
+    if 12 <= hour <= 17:
+        return "tarde"
+    if 18 <= hour <= 23:
+        return "noite"
+    return "fora_turno"
+
+
 def _build_model_status():
     ml_model = MLModelService()
     tuning_service = PerformanceTuningService()
@@ -345,6 +419,9 @@ def _build_model_status():
         "features_count": len(features),
         "features": features,
         "effective_ml_weight": _estimate_effective_ml_weight(metadata),
+        "validation_strategy": metadata.get("validation_strategy"),
+        "rare_class_full_train": metadata.get("rare_class_full_train"),
+        "ml_note": "ML assistente ativo quando houver modelo carregado; heurística continua como base de proteção.",
         "historical_reliability": tuning_service.reliability_state(),
     }
 
@@ -825,6 +902,83 @@ def list_opportunities(
             "valid_odd": True,
         },
         "generated_at": now_local.isoformat(),
+    }
+
+
+@router.get("/daily-ranking")
+def daily_ranking(
+    current_user=Depends(get_current_user),
+    date: str | None = Query(default=None),
+    limit: int = Query(default=50, le=100),
+):
+    service = DailyLeaguesService()
+    payloads = service.get_all_day_payloads(date)
+    items = [_payload_to_dashboard_item(payload) for payload in payloads[:limit]]
+
+    by_turn = Counter(_turn_from_time(item.get("match_time")) for item in items)
+    by_market = Counter(str(item.get("market_type") or "1x2") for item in items)
+    by_model = Counter(str(item.get("model_source") or "heuristic") for item in items)
+
+    return {
+        "items": items,
+        "total": len(payloads),
+        "returned": len(items),
+        "generated_at": datetime.now(ZoneInfo(settings.timezone)).isoformat(),
+        "diagnostics": {
+            "by_turn": dict(by_turn),
+            "by_market": dict(by_market),
+            "by_model_source": dict(by_model),
+            "min_daily_target": 5,
+        },
+    }
+
+
+@router.get("/delivery-quality")
+def delivery_quality(
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    tz = ZoneInfo(settings.timezone)
+    today = datetime.now(tz).strftime("%Y-%m-%d")
+
+    rows = (
+        db.query(Prediction)
+        .filter(Prediction.match_date == today)
+        .order_by(Prediction.match_time.asc(), Prediction.created_at.desc())
+        .all()
+    )
+
+    by_turn = Counter(_turn_from_time(row.match_time) for row in rows)
+    by_market = Counter(str(row.market_type or "1x2") for row in rows)
+    by_model = Counter(str(row.model_source or "heuristic") for row in rows)
+    by_status = Counter(str(row.status or "pending") for row in rows)
+
+    sent_summaries_path = Path("data/sent_summaries.json")
+    sent_alerts_path = Path("data/sent_alerts.json")
+
+    def load_store(path: Path):
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            return raw if isinstance(raw, list) else []
+        except Exception:
+            return []
+
+    sent_summaries = [str(item) for item in load_store(sent_summaries_path) if today in str(item)]
+    sent_alerts = [str(item) for item in load_store(sent_alerts_path) if today in str(item)]
+
+    return {
+        "date": today,
+        "persisted_predictions": len(rows),
+        "target_min_daily_picks": 5,
+        "is_under_daily_target": len(rows) < 5,
+        "sent_summaries": sent_summaries,
+        "sent_alerts_count": len(sent_alerts),
+        "by_turn": dict(by_turn),
+        "by_market": dict(by_market),
+        "by_model_source": dict(by_model),
+        "by_status": dict(by_status),
+        "last_predictions": [_serialize_prediction(row) for row in rows[:20]],
+        "generated_at": datetime.now(tz).isoformat(),
     }
 
 

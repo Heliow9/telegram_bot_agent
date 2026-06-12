@@ -4,6 +4,10 @@ from app.deps import get_current_user
 from app.services.scheduler_service import (
     job_check_results,
     job_check_games,
+    job_send_daily_top_summary,
+    job_send_morning_summary,
+    job_send_afternoon_summary,
+    job_send_night_summary,
     run_today_audit,
 )
 from app.services.post_deploy_sync_service import PostDeploySyncService
@@ -28,6 +32,34 @@ def run_pre_game_check(current_user=Depends(get_current_user)):
         "success": True,
         "message": "Verificação pré-jogo executada com sucesso.",
     }
+
+
+@router.post("/send-daily-ranking")
+def send_daily_ranking(current_user=Depends(get_current_user)):
+    result = job_send_daily_top_summary()
+    return {
+        "success": bool(result.get("ok")),
+        "message": "Ranking diário processado.",
+        "result": result,
+    }
+
+
+@router.post("/send-morning-summary")
+def send_morning_summary(current_user=Depends(get_current_user)):
+    job_send_morning_summary()
+    return {"success": True, "message": "Resumo da manhã processado."}
+
+
+@router.post("/send-afternoon-summary")
+def send_afternoon_summary(current_user=Depends(get_current_user)):
+    job_send_afternoon_summary()
+    return {"success": True, "message": "Resumo da tarde processado."}
+
+
+@router.post("/send-night-summary")
+def send_night_summary(current_user=Depends(get_current_user)):
+    job_send_night_summary()
+    return {"success": True, "message": "Resumo da noite processado."}
 
 
 @router.post("/run-today-audit")
@@ -69,3 +101,8 @@ def audit_today_alias(current_user=Depends(get_current_user)):
 @router.post("/post-deploy-sync")
 def post_deploy_sync_alias(current_user=Depends(get_current_user)):
     return run_post_deploy_sync(current_user=current_user)
+
+
+@router.post("/daily-ranking")
+def daily_ranking_alias(current_user=Depends(get_current_user)):
+    return send_daily_ranking(current_user=current_user)

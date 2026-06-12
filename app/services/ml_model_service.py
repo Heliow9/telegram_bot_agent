@@ -8,6 +8,9 @@ import pandas as pd
 MODEL_PATH = Path("models/1x2_model.joblib")
 
 
+EXPECTED_CLASSES = ("1", "X", "2")
+
+
 class MLModelService:
     def __init__(self):
         self.model = None
@@ -15,15 +18,18 @@ class MLModelService:
         self.features_: Optional[List[str]] = None
         self.metadata: Dict[str, Any] = {}
         self.market_type: str = "1x2"
+        self._model_mtime: Optional[float] = None
         self._load()
 
     def _load(self):
         if not MODEL_PATH.exists():
             print("[ML] Modelo 1x2 ainda não encontrado.")
+            self._model_mtime = None
             return
 
         try:
             payload = joblib.load(MODEL_PATH)
+            self._model_mtime = MODEL_PATH.stat().st_mtime
 
             self.model = payload.get("model")
             self.classes_ = payload.get("classes")
@@ -67,10 +73,34 @@ class MLModelService:
             self.metadata = {}
             self.market_type = "1x2"
 
+    def reload(self):
+        """Recarrega o modelo do disco. Usado após treino manual/automático."""
+        self.model = None
+        self.classes_ = None
+        self.features_ = None
+        self.metadata = {}
+        self.market_type = "1x2"
+        self._model_mtime = None
+        self._load()
+
+    def refresh_if_changed(self):
+        """Evita que o scheduler continue usando um modelo antigo em memória."""
+        if not MODEL_PATH.exists():
+            return
+        try:
+            current_mtime = MODEL_PATH.stat().st_mtime
+        except Exception:
+            return
+        if self._model_mtime is None or current_mtime > self._model_mtime:
+            print("[ML] Modelo alterado em disco. Recarregando para próximas análises.")
+            self.reload()
+
     def is_available(self) -> bool:
+        self.refresh_if_changed()
         return self.model is not None and self.classes_ is not None
 
     def get_metadata(self) -> Dict[str, Any]:
+        self.refresh_if_changed()
         return self.metadata or {}
 
     def get_market_type(self) -> str:
@@ -84,21 +114,21 @@ class MLModelService:
 
         for key, value in features.items():
             if value is None:
-                sanitized[key] = 0
+                sanitized[key] = 0.0
                 continue
 
             if isinstance(value, bool):
-                sanitized[key] = int(value)
+                sanitized[key] = float(int(value))
                 continue
 
             if isinstance(value, (int, float)):
-                sanitized[key] = value
+                sanitized[key] = float(value)
                 continue
 
             try:
                 sanitized[key] = float(value)
             except (TypeError, ValueError):
-                sanitized[key] = 0
+                sanitized[key] = 0.0
 
         return sanitized
 
@@ -107,12 +137,13 @@ class MLModelService:
         raw_df = pd.DataFrame([safe_features])
 
         if self.features_:
-            aligned = raw_df.reindex(columns=self.features_, fill_value=0)
-            return aligned.fillna(0)
+            aligned = raw_df.reindex(columns=self.features_, fill_value=0.0)
+            return aligned.fillna(0.0).astype(float)
 
-        return raw_df.fillna(0)
+        return raw_df.fillna(0.0).astype(float)
 
     def predict_proba(self, features: Dict) -> Optional[Dict[str, float]]:
+        self.refresh_if_changed()
         if not self.is_available():
             return None
 
@@ -124,11 +155,7 @@ class MLModelService:
             for label, prob in zip(self.classes_, probs):
                 mapping[str(label)] = float(prob)
 
-            result = {
-                "1": mapping.get("1", 0.0),
-                "X": mapping.get("X", 0.0),
-                "2": mapping.get("2", 0.0),
-            }
+            result = {label: mapping.get(label, 0.0) for label in EXPECTED_CLASSES}
 
             total = result["1"] + result["X"] + result["2"]
             if total > 0:

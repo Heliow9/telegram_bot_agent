@@ -31,12 +31,18 @@ class MLTrainingService:
                     "clf",
                     LogisticRegression(
                         solver="lbfgs",
-                        max_iter=1500,
+                        max_iter=2500,
                         class_weight="balanced",
                     ),
                 ),
             ]
         )
+
+    def _numeric_features(self, X: pd.DataFrame) -> pd.DataFrame:
+        X = X.copy()
+        for column in X.columns:
+            X[column] = pd.to_numeric(X[column], errors="coerce")
+        return X.replace([float("inf"), float("-inf")], 0).fillna(0)
 
     def _can_use_stratify(self, y: pd.Series) -> bool:
         counts = y.value_counts()
@@ -126,7 +132,7 @@ class MLTrainingService:
             print("[ML TRAIN] Dataset sem linhas válidas após normalização.")
             return
 
-        X = self._drop_non_feature_columns(df)
+        X = self._numeric_features(self._drop_non_feature_columns(df))
         y = df["target"].astype(str)
 
         if X.empty:
@@ -150,23 +156,31 @@ class MLTrainingService:
         print(f"[ML TRAIN] Features usadas: {list(X.columns)}")
 
         use_stratify = self._can_use_stratify(y)
-        if not use_stratify:
-            print(
-                "[ML TRAIN] Split sem estratificação: há classes com menos de 2 exemplos."
-            )
+        use_holdout = bool(use_stratify and len(df) >= max(self.MIN_ROWS, 24))
+        validation_strategy = "holdout_stratified" if use_holdout else "train_full_rare_classes"
 
-        try:
-            X_train, X_test, y_train, y_test = train_test_split(
-                X,
-                y,
-                test_size=self.TEST_SIZE,
-                random_state=self.RANDOM_STATE,
-                stratify=y if use_stratify else None,
+        if not use_holdout:
+            print(
+                "[ML TRAIN] Treino em base completa: dataset pequeno ou classe rara. "
+                "Isso mantém classes como empate (X) dentro do modelo e evita modelo 1/2 sem X."
             )
-        except ValueError as e:
-            print(f"[ML TRAIN] Falha no split: {e}")
-            print("[ML TRAIN] Treino cancelado para evitar modelo ruim.")
-            return
+            X_train, y_train = X, y
+            X_test, y_test = X, y
+        else:
+            try:
+                X_train, X_test, y_train, y_test = train_test_split(
+                    X,
+                    y,
+                    test_size=self.TEST_SIZE,
+                    random_state=self.RANDOM_STATE,
+                    stratify=y,
+                )
+            except ValueError as e:
+                print(f"[ML TRAIN] Falha no split: {e}")
+                print("[ML TRAIN] Usando base completa para não descartar classes raras.")
+                validation_strategy = "train_full_split_fallback"
+                X_train, y_train = X, y
+                X_test, y_test = X, y
 
         train_class_counts = y_train.value_counts().to_dict()
         test_class_counts = y_test.value_counts().to_dict()
@@ -205,7 +219,9 @@ class MLTrainingService:
             "features_count": int(len(X.columns)),
             "accuracy": round(float(acc), 4),
             "log_loss": round(float(ll), 4) if ll is not None else None,
-            "used_stratify": bool(use_stratify),
+            "used_stratify": bool(use_holdout),
+            "validation_strategy": validation_strategy,
+            "rare_class_full_train": bool(not use_holdout),
         }
 
         MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)

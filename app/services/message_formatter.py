@@ -261,6 +261,54 @@ def _get_best_probability(analysis: dict):
     return _safe_float(analysis.get("best_probability"))
 
 
+def _format_model_line(analysis: dict) -> str:
+    model_source = str(analysis.get("model_source", "heuristic")).upper()
+    ml_weight = _safe_float(analysis.get("ml_weight"), 0) or 0
+
+    if ml_weight > 0:
+        return f"🧠 *Modelo:* {_md(model_source)} \\(ML {_md(f'{ml_weight:.0%}')}\\)"
+
+    return f"🧠 *Modelo:* {_md(model_source)}"
+
+
+def _format_strategy_lines(analysis: dict) -> list[str]:
+    primary_pick = str(analysis.get("primary_1x2_pick") or "").upper().strip()
+    safe_pick = str(analysis.get("safe_pick") or "").upper().strip()
+    primary_probability = _safe_float(analysis.get("primary_1x2_probability"))
+    safe_probability = _safe_float(analysis.get("safe_probability"))
+
+    lines = []
+
+    if primary_pick and primary_probability is not None:
+        lines.append(
+            f"🎲 *Linha 1X2:* {_md(_pick_label(primary_pick))} "
+            f"\\({_md(primary_pick)}\\) • {primary_probability:.0%}"
+        )
+
+    if safe_pick and safe_probability is not None:
+        lines.append(
+            f"🛡️ *Proteção:* {_md(_pick_label(safe_pick))} "
+            f"\\({_md(safe_pick)}\\) • {safe_probability:.0%}"
+        )
+
+    return lines
+
+
+def _format_strategy_compact(analysis: dict) -> str:
+    primary_pick = str(analysis.get("primary_1x2_pick") or "").upper().strip()
+    safe_pick = str(analysis.get("safe_pick") or "").upper().strip()
+    primary_probability = _safe_float(analysis.get("primary_1x2_probability"))
+    safe_probability = _safe_float(analysis.get("safe_probability"))
+
+    parts = []
+    if primary_pick and primary_probability is not None:
+        parts.append(f"1X2: *{_md(primary_pick)}* {primary_probability:.0%}")
+    if safe_pick and safe_probability is not None:
+        parts.append(f"Seguro: *{_md(safe_pick)}* {safe_probability:.0%}")
+
+    return " • ".join(parts)
+
+
 def _get_main_probabilities_text(analysis: dict) -> str:
     return (
         f"{float(analysis.get('prob_home') or 0):.0%} • "
@@ -449,8 +497,9 @@ def format_prediction_message(payload: dict) -> str:
         f"🎯 *Mercado escolhido:* {_md(_market_type_label(market_type))}",
         f"📌 *Palpite:* {_md(_pick_label(final_pick))} \\({_md(final_pick)}\\)",
         f"🔒 *Confiança:* {_md(_confidence_label(analysis.get('confidence')))}",
-        f"🧠 *Modelo:* {_md(str(analysis.get('model_source', 'heuristic')).upper())}",
+        _format_model_line(analysis),
     ])
+    lines.extend(_format_strategy_lines(analysis))
 
     best_probability = _get_best_probability(analysis)
     if best_probability is not None:
@@ -494,8 +543,9 @@ def format_best_pick(payload: dict) -> str:
         f"🎯 *Mercado:* {_md(_market_type_label(market_type))}",
         f"📌 *Entrada sugerida:* {_md(_pick_label(final_pick))} \\({_md(final_pick)}\\)",
         f"🔒 *Confiança:* {_md(_confidence_label(analysis.get('confidence')))}",
-        f"🧠 *Modelo:* {_md(str(analysis.get('model_source', 'heuristic')).upper())}",
+        _format_model_line(analysis),
     ])
+    lines.extend(_format_strategy_lines(analysis))
 
     best_probability = _get_best_probability(analysis)
     if best_probability is not None:
@@ -561,6 +611,10 @@ def format_top_ranking(payloads: list[dict], top_n: int = 5) -> str:
         if edge is not None:
             extras.append(f"Edge: *{edge:.2%}*")
 
+        strategy = _format_strategy_compact(analysis)
+        if strategy:
+            lines.append(strategy)
+
         if extras:
             lines.append(" • ".join(extras))
 
@@ -613,6 +667,10 @@ def format_league_summary(league_name: str, payloads: list[dict]) -> str:
                 f"{float(analysis.get('prob_x2') or 0):.0%} • "
                 f"{float(analysis.get('prob_12') or 0):.0%}"
             )
+
+        strategy = _format_strategy_compact(analysis)
+        if strategy:
+            lines.append(strategy)
 
         extras = []
         if market_odds is not None:
