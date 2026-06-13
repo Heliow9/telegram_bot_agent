@@ -30,6 +30,7 @@ from app.services.ml_training_service import MLTrainingService
 from app.services.odds_service import OddsService
 from app.services.prediction_store import (
     save_prediction,
+    save_predictions_batch,
     get_pending_predictions,
     update_prediction_market_odds,
 )
@@ -514,24 +515,12 @@ def _pick_latest_market_odds_by_market(
 
 
 def _persist_payloads(payloads: list[dict], source_label: str):
-    saved = 0
-
-    for payload in payloads:
-        try:
-            save_prediction(payload)
-            saved += 1
-        except Exception as e:
-            fixture = payload.get("fixture", {})
-            fixture_id = fixture.get("id", "sem_id")
-            print(
-                f"[SCHEDULER] Erro ao persistir previsão "
-                f"({source_label}) fixture={fixture_id}: {e}"
-            )
-
+    result = save_predictions_batch(payloads)
     print(
-        f"[SCHEDULER] Persistência concluída ({source_label}). "
-        f"Payloads processados: {saved}"
+        f"[SCHEDULER] Persistência em lote concluída ({source_label}) | "
+        f"salvos={result.get('saved', 0)} | falhas={result.get('failed', 0)}"
     )
+    return result
 
 
 def _send_ranked_summary(payloads: list[dict], period_label: str):
@@ -657,34 +646,107 @@ def job_send_daily_top_summary():
 
 
 
+def job_refresh_basketball_calendar():
+    """Pré-carrega próximos dias no MySQL sem enviar Telegram."""
+    started = _job_log_start("job_refresh_basketball_calendar")
+    try:
+        payloads = daily_service.get_basketball_range_payloads(
+            days=settings.basketball_prefetch_days
+        )
+        if payloads:
+            _persist_payloads(payloads, "calendario_basquete_refresh")
+        status = daily_service.api.status()
+        _job_log_end(
+            "job_refresh_basketball_calendar",
+            started,
+            success=True,
+            persisted=len(payloads),
+            cooldown=status.get("cooldown_remaining_seconds"),
+        )
+        return {"ok": True, "persisted": len(payloads), "sportsdb": status}
+    except Exception as exc:
+        _job_log_end("job_refresh_basketball_calendar", started, success=False)
+        return {"ok": False, "persisted": 0, "error": str(exc), "sportsdb": daily_service.api.status()}
+
+
 def job_send_basketball_daily_summary():
-    """Envia ranking diário de basquete separado do futebol."""
+    """Atualiza calendário de basquete e envia ranking do dia.
+
+    A coleta usa o gateway local Redis e pré-carrega os próximos dias para que
+    a dashboard mostre partidas futuras sem consultar a TheSportsDB ao abrir.
+    """
     started = _job_log_start("job_send_basketball_daily_summary")
     today = now_local().strftime("%Y-%m-%d")
     summary_key = f"{today}_basketball_daily"
 
-    if _already_sent_summary(summary_key):
-        _job_log_end("job_send_basketball_daily_summary", started, sent=False, reason="already_sent")
-        return {"ok": False, "sent": 0, "reason": "already_sent"}
-
     try:
-        payloads = daily_service.get_basketball_all_day_payloads(today)
+        calendar_payloads = daily_service.get_basketball_range_payloads(
+            days=settings.basketball_prefetch_days
+        )
+        if calendar_payloads:
+            _persist_payloads(calendar_payloads, "calendario_basquete")
+
+        payloads = [
+            payload for payload in calendar_payloads
+            if str((payload.get("fixture") or {}).get("local_date")
+                   or (payload.get("fixture") or {}).get("date") or "") == today
+        ]
         payloads = _filter_payloads_future(payloads, "basketball_daily", min_lead_minutes=1)
 
         if not payloads:
-            upcoming = daily_service.get_basketball_upcoming_payloads(hours=36)
-            payloads = _filter_payloads_future(upcoming, "basketball_daily_backfill", min_lead_minutes=1)
+            # Usa o próprio calendário pré-carregado como backfill, sem nova
+            # rodada de consultas externas.
+            payloads = _filter_payloads_future(
+                calendar_payloads,
+                "basketball_daily_backfill",
+                min_lead_minutes=1,
+            )
 
         if not payloads:
-            _job_log_end("job_send_basketball_daily_summary", started, success=True, payloads=0, sent=False, retryable=True)
-            return {"ok": False, "sent": 0, "reason": "no_future_payloads"}
+            _job_log_end(
+                "job_send_basketball_daily_summary",
+                started,
+                success=True,
+                payloads=0,
+                sent=False,
+                retryable=True,
+                sportsdb=daily_service.api.status(),
+            )
+            return {
+                "ok": False,
+                "sent": 0,
+                "reason": "no_future_payloads",
+                "sportsdb": daily_service.api.status(),
+            }
+
+        # Atualizar calendário deve funcionar mesmo se o resumo já foi enviado.
+        if _already_sent_summary(summary_key):
+            _job_log_end(
+                "job_send_basketball_daily_summary",
+                started,
+                sent=False,
+                reason="already_sent",
+                persisted=len(calendar_payloads),
+            )
+            return {
+                "ok": True,
+                "sent": 0,
+                "reason": "already_sent",
+                "persisted": len(calendar_payloads),
+            }
 
         if not _claim_json_key(SUMMARY_STORE_PATH, summary_key):
-            _job_log_end("job_send_basketball_daily_summary", started, sent=False, reason="already_sent_or_claimed")
+            _job_log_end(
+                "job_send_basketball_daily_summary",
+                started,
+                sent=False,
+                reason="already_sent_or_claimed",
+            )
             return {"ok": False, "sent": 0, "reason": "already_sent_or_claimed"}
 
-        _persist_payloads(payloads, "ranking_basquete")
-        ranking_result = telegram.send_message(format_top_ranking(payloads, top_n=BASKETBALL_RANKING_TOP_N))
+        ranking_result = telegram.send_message(
+            format_top_ranking(payloads, top_n=BASKETBALL_RANKING_TOP_N)
+        )
         ok = bool(ranking_result.get("ok"))
         if not ok:
             _release_json_key(SUMMARY_STORE_PATH, summary_key)
@@ -694,14 +756,21 @@ def job_send_basketball_daily_summary():
             started,
             success=ok,
             payloads=len(payloads),
+            persisted=len(calendar_payloads),
             sent=min(len(payloads), BASKETBALL_RANKING_TOP_N),
         )
-        return {"ok": ok, "sent": min(len(payloads), BASKETBALL_RANKING_TOP_N), "payloads": len(payloads)}
+        return {
+            "ok": ok,
+            "sent": min(len(payloads), BASKETBALL_RANKING_TOP_N),
+            "payloads": len(payloads),
+            "persisted": len(calendar_payloads),
+            "sportsdb": daily_service.api.status(),
+        }
     except Exception as e:
         _release_json_key(SUMMARY_STORE_PATH, summary_key)
         print(f"[SCHEDULER] Erro ao enviar ranking de basquete: {e}")
         _job_log_end("job_send_basketball_daily_summary", started, success=False)
-        return {"ok": False, "sent": 0, "error": str(e)}
+        return {"ok": False, "sent": 0, "error": str(e), "sportsdb": daily_service.api.status()}
 
 
 def _preload_turn_payloads(payloads: list[dict], period_label: str):
@@ -1284,6 +1353,18 @@ def start_scheduler():
         )
     )
 
+
+    scheduler.add_job(
+        job_refresh_basketball_calendar,
+        "cron",
+        hour=6,
+        minute=20,
+        id="job_refresh_basketball_calendar",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=900,
+    )
 
     scheduler.add_job(
         job_send_daily_top_summary,

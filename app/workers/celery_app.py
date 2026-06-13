@@ -17,6 +17,10 @@ celery_app.conf.update(
     task_track_started=True,
     worker_prefetch_multiplier=1,
     task_acks_late=True,
+    task_reject_on_worker_lost=True,
+    broker_connection_retry_on_startup=True,
+    worker_cancel_long_running_tasks_on_connection_loss=True,
+    broker_transport_options={"visibility_timeout": 600},
     task_routes={
         "app.workers.tasks.analyze_match_task": {"queue": "analysis"},
         "app.workers.tasks.send_telegram_task": {"queue": "telegram"},

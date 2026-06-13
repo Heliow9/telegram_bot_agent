@@ -3,8 +3,10 @@ from zoneinfo import ZoneInfo
 from typing import List, Dict, Optional, Tuple
 import unicodedata
 
+from app.config import settings
 from app.constants import LEAGUES, BASKETBALL_LEAGUES
 from app.services.sportsdb_api import SportsDBAPI
+from app.services.cache_service import CacheService
 from app.services.analysis_service import AnalysisService
 from app.services.basketball_analysis_service import BasketballAnalysisService
 from app.services.time_utils import event_payload_to_local_datetime
@@ -35,6 +37,7 @@ class DailyLeaguesService:
 
     def __init__(self):
         self.api = SportsDBAPI()
+        self.cache = CacheService()
         self.analysis_service = AnalysisService()
         self.basketball_analysis_service = BasketballAnalysisService()
         self.tz = ZoneInfo("America/Recife")
@@ -108,8 +111,11 @@ class DailyLeaguesService:
 
     def _event_matches_league(self, event: Dict, league_meta: Dict) -> bool:
         event_league_id = str(event.get("idLeague") or "").strip()
-        if event_league_id and event_league_id == str(league_meta.get("id") or "").strip():
-            return True
+        wanted_league_id = str(league_meta.get("id") or "").strip()
+        # Quando a API fornece idLeague, ele é a fonte de verdade. Não fazemos
+        # fallback textual após um ID diferente (ex.: NBA x NBA G League).
+        if event_league_id and wanted_league_id:
+            return event_league_id == wanted_league_id
 
         event_league = self._normalize_text(event.get("strLeague") or "")
         wanted_names = {
@@ -172,52 +178,81 @@ class DailyLeaguesService:
         start = datetime.strptime(start_date, "%Y-%m-%d").date()
         return [(start + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(days)]
 
-    def _collect_raw_events_for_dates(self, league_meta: Dict, dates: List[str]) -> List[Dict]:
-        raw_events: List[Dict] = []
-        for date_str in dates:
-            league_names_to_try = [league_meta["name"], *list(league_meta.get("aliases", []) or [])]
-            tried_names = set()
-            for league_name in league_names_to_try:
-                league_name = str(league_name or "").strip()
-                if not league_name or league_name.lower() in tried_names:
-                    continue
-                tried_names.add(league_name.lower())
-                try:
-                    by_name = self.api.get_events_by_day_list(date_str, league_name)
-                    if by_name:
-                        raw_events.extend(by_name)
-                        print(
-                            f"[DAILY][SOURCE] {league_meta['display_name']} | eventsday:l | "
-                            f"nome={league_name} | data={date_str} | qtd={len(by_name)}"
-                        )
-                except Exception as e:
-                    print(
-                        f"[DAILY] Falha eventsday por nome em {league_meta['display_name']} "
-                        f"nome={league_name} data={date_str}: {e}"
-                    )
+    def _consume_fallback_budget(self, league_meta: Dict) -> bool:
+        """Limita fallbacks caros por janela de 10 minutos entre processos."""
+        if not bool(settings.sportsdb_enable_nextleague_fallback):
+            return False
+        window = int(self._now_local().timestamp() // 600)
+        key = f"sportsdb:fallback-budget:{window}"
+        used = self.cache.increment(key, ttl_seconds=660)
+        allowed = used <= max(0, int(settings.sportsdb_max_fallback_calls_per_10min))
+        if not allowed:
+            print(
+                f"[DAILY][FREE-LIMIT] fallback ignorado | liga={league_meta.get('display_name')} "
+                f"| usados={used} | max={settings.sportsdb_max_fallback_calls_per_10min}"
+            )
+        return allowed
 
+    def _collect_raw_events_for_dates(self, league_meta: Dict, dates: List[str]) -> List[Dict]:
+        """Coleta econômica: 1 consulta por esporte/data e filtro local.
+
+        O cache Redis do SportsDBAPI faz com que todas as ligas do mesmo esporte
+        reaproveitem a mesma resposta. Consulta por nome fica desativada por
+        padrão, pois aliases multiplicavam chamadas e causavam HTTP 429.
+        """
+        raw_events: List[Dict] = []
+        sport_name = str(league_meta.get("sport") or "Soccer").strip() or "Soccer"
+
+        for date_str in dates:
             try:
-                sport_name = str(league_meta.get("sport") or "Soccer").strip() or "Soccer"
                 by_sport = self.api.get_events_by_day_sport_list(date_str, sport=sport_name)
-                if by_sport:
-                    league_filtered = [ev for ev in by_sport if self._event_matches_league(ev, league_meta)]
+                league_filtered = [ev for ev in by_sport if self._event_matches_league(ev, league_meta)]
+                if league_filtered:
                     raw_events.extend(league_filtered)
-                    print(
-                        f"[DAILY][SOURCE] {league_meta['display_name']} | eventsday:{sport_name.lower()} | "
-                        f"data={date_str} | retornados={len(by_sport)} | liga={len(league_filtered)}"
-                    )
+                print(
+                    f"[DAILY][SOURCE-CACHED] {league_meta['display_name']} | "
+                    f"eventsday:{sport_name.lower()} | data={date_str} | "
+                    f"retornados={len(by_sport)} | liga={len(league_filtered)}"
+                )
             except Exception as e:
-                print(f"[DAILY] Falha eventsday por esporte em {league_meta['display_name']} data={date_str}: {e}")
+                print(
+                    f"[DAILY] Falha eventsday por esporte em "
+                    f"{league_meta['display_name']} data={date_str}: {e}"
+                )
+
+            # Fallback opcional, apenas nome principal e somente quando o
+            # endpoint por esporte não trouxe a liga. Aliases foram removidos.
+            if not raw_events and bool(settings.sportsdb_enable_league_name_fallback):
+                league_name = str(league_meta.get("name") or "").strip()
+                if league_name:
+                    try:
+                        by_name = self.api.get_events_by_day_list(date_str, league_name)
+                        filtered = [ev for ev in by_name if self._event_matches_league(ev, league_meta)]
+                        raw_events.extend(filtered)
+                        print(
+                            f"[DAILY][FALLBACK-NAME] {league_meta['display_name']} | "
+                            f"data={date_str} | retornados={len(by_name)} | liga={len(filtered)}"
+                        )
+                    except Exception as e:
+                        print(
+                            f"[DAILY] Falha fallback por nome em "
+                            f"{league_meta['display_name']} data={date_str}: {e}"
+                        )
 
         return self._dedupe_events(raw_events)
 
     def _collect_next_events(self, league_meta: Dict) -> List[Dict]:
         raw_events: List[Dict] = []
+        if not self._consume_fallback_budget(league_meta):
+            return raw_events
         try:
             by_next = self.api.get_next_events_by_league_list(str(league_meta["id"]))
             if by_next:
                 raw_events.extend(by_next)
-                print(f"[DAILY][SOURCE] {league_meta['display_name']} | eventsnextleague | qtd={len(by_next)}")
+                print(
+                    f"[DAILY][FALLBACK-NEXT] {league_meta['display_name']} | "
+                    f"eventsnextleague | qtd={len(by_next)}"
+                )
         except Exception as e:
             print(f"[DAILY] Falha eventsnextleague em {league_meta['display_name']}: {e}")
         return self._dedupe_events(raw_events)
@@ -279,7 +314,10 @@ class DailyLeaguesService:
         dates = self._date_range(now.strftime("%Y-%m-%d"), days)
 
         raw_events = self._collect_raw_events_for_dates(league_meta, dates)
-        raw_events.extend(self._collect_next_events(league_meta))
+        # Fallback só quando a coleta agrupada realmente não encontrou a liga.
+        # Antes isso executava para todas as ligas em todas as rodadas.
+        if not raw_events:
+            raw_events.extend(self._collect_next_events(league_meta))
         raw_events = self._dedupe_events(raw_events)
 
         filtered = []
@@ -362,6 +400,34 @@ class DailyLeaguesService:
             BASKETBALL_LEAGUES,
             self.basketball_analysis_service,
         )
+
+    def get_basketball_range_payloads(self, days: Optional[int] = None) -> List[Dict]:
+        """Pré-carrega calendário/análises de basquete para a dashboard.
+
+        O número de chamadas externas continua econômico: uma resposta
+        eventsday por data é compartilhada pelas três ligas via Redis.
+        """
+        total_days = max(1, int(days or settings.basketball_prefetch_days))
+        dates = self._date_range(self._today(), total_days)
+        payloads: List[Dict] = []
+        for date_str in dates:
+            payloads.extend(self.get_basketball_all_day_payloads(date_str))
+        # Remove duplicados por fixture antes de persistir.
+        deduped: List[Dict] = []
+        seen = set()
+        for payload in payloads:
+            fixture = payload.get("fixture") or {}
+            key = str(fixture.get("id") or "").strip() or (
+                str(fixture.get("home_team") or "").lower(),
+                str(fixture.get("away_team") or "").lower(),
+                str(fixture.get("local_date") or fixture.get("date") or ""),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(payload)
+        print(f"[BASKET][PREFETCH] dias={total_days} payloads={len(deduped)}")
+        return self.basketball_analysis_service.sort_by_best_picks(deduped)
 
     def get_basketball_upcoming_payloads(self, hours: int = 48) -> List[Dict]:
         payloads = []

@@ -12,11 +12,19 @@ from app.services.scheduler_service import (
     run_today_audit,
 )
 from app.services.post_deploy_sync_service import PostDeploySyncService
+from app.services.sportsdb_api import SportsDBAPI
+from app.services.cache_service import CacheService
 from app.workers.tasks import send_basketball_ranking_task, send_daily_ranking_task
 
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
+
+
+@router.get("/sportsdb-status")
+def sportsdb_status(current_user=Depends(get_current_user)):
+    """Diagnóstico do gateway local, cache e orçamento gratuito."""
+    return {"success": True, "sportsdb": SportsDBAPI().status()}
 
 @router.post("/run-results-check")
 def run_results_check(current_user=Depends(get_current_user)):
@@ -56,17 +64,29 @@ def send_daily_ranking(current_user=Depends(get_current_user)):
 
 @router.post("/send-basketball-ranking")
 def send_basketball_ranking(current_user=Depends(get_current_user)):
-    """Dispara ranking de basquete em background para não travar a dashboard/API."""
+    """Enfileira uma atualização, deduplicando cliques por dois minutos."""
+    cache = CacheService()
+    dedupe_key = "admin:queue:basketball-ranking"
+    if not cache.add_once(dedupe_key, ttl_seconds=120):
+        return {
+            "success": True,
+            "queued": False,
+            "duplicate": True,
+            "message": "Uma atualização de basquete já foi enfileirada nos últimos 2 minutos.",
+            "sportsdb": SportsDBAPI().status(),
+        }
     try:
-        task = send_basketball_ranking_task.delay()
+        task = send_basketball_ranking_task.apply_async(expires=300)
     except Exception as exc:
+        cache.delete(dedupe_key)
         raise HTTPException(status_code=503, detail=f"Fila indisponível para processar ranking de basquete: {exc}")
 
     return {
         "success": True,
         "queued": True,
         "task_id": task.id,
-        "message": "Ranking de basquete enfileirado. Acompanhe os logs do worker-analysis.",
+        "message": "Ranking/calendário de basquete enfileirado no worker-analysis.",
+        "sportsdb": SportsDBAPI().status(),
     }
 
 

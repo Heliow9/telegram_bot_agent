@@ -208,6 +208,29 @@ def save_prediction(payload: dict):
             )
 
 
+
+def save_predictions_batch(payloads: List[Dict]) -> Dict[str, int]:
+    """Persiste vários payloads e sincroniza o JSON somente uma vez.
+
+    O fluxo anterior executava uma leitura completa do MySQL após cada jogo,
+    tornando o pré-carregamento de calendário desnecessariamente pesado.
+    """
+    saved = 0
+    failed = 0
+    for payload in payloads or []:
+        try:
+            save_prediction_db(payload)
+            saved += 1
+        except Exception as exc:
+            failed += 1
+            fixture = (payload.get("fixture") or {}).get("id", "sem_id")
+            print(f"[PREDICTION_STORE][BATCH] erro fixture={fixture}: {exc}")
+    try:
+        _sync_db_to_json()
+    except Exception as sync_error:
+        print(f"[PREDICTION_STORE][BATCH] erro ao sincronizar JSON: {sync_error}")
+    return {"saved": saved, "failed": failed}
+
 def get_prediction_by_fixture_id(fixture_id: str) -> Optional[Dict]:
     db = SessionLocal()
     try:

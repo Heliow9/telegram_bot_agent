@@ -45,6 +45,26 @@ class Settings(BaseModel):
         "https://www.thesportsdb.com/api/v1/json",
     )
 
+    # Gateway local/cache compartilhado para trabalhar com o plano gratuito.
+    # Os limites são propositalmente conservadores para evitar HTTP 429.
+    sportsdb_proxy_enabled: bool = _env_bool("SPORTSDB_PROXY_ENABLED", "true")
+    sportsdb_max_requests_per_minute: int = int(os.getenv("SPORTSDB_MAX_REQUESTS_PER_MINUTE", "15"))
+    sportsdb_min_interval_seconds: float = float(os.getenv("SPORTSDB_MIN_INTERVAL_SECONDS", "4.2"))
+    sportsdb_request_timeout_seconds: int = int(os.getenv("SPORTSDB_REQUEST_TIMEOUT_SECONDS", "8"))
+    sportsdb_rate_limit_max_wait_seconds: float = float(os.getenv("SPORTSDB_RATE_LIMIT_MAX_WAIT_SECONDS", "4"))
+    sportsdb_429_cooldown_seconds: int = int(os.getenv("SPORTSDB_429_COOLDOWN_SECONDS", "180"))
+    sportsdb_singleflight_wait_seconds: float = float(os.getenv("SPORTSDB_SINGLEFLIGHT_WAIT_SECONDS", "10"))
+    sportsdb_stale_ttl_seconds: int = int(os.getenv("SPORTSDB_STALE_TTL_SECONDS", "604800"))
+    sportsdb_eventsday_cache_ttl_seconds: int = int(os.getenv("SPORTSDB_EVENTSDAY_CACHE_TTL_SECONDS", "1800"))
+    sportsdb_nextleague_cache_ttl_seconds: int = int(os.getenv("SPORTSDB_NEXTLEAGUE_CACHE_TTL_SECONDS", "3600"))
+    sportsdb_team_cache_ttl_seconds: int = int(os.getenv("SPORTSDB_TEAM_CACHE_TTL_SECONDS", "21600"))
+    sportsdb_table_cache_ttl_seconds: int = int(os.getenv("SPORTSDB_TABLE_CACHE_TTL_SECONDS", "43200"))
+    sportsdb_event_cache_ttl_seconds: int = int(os.getenv("SPORTSDB_EVENT_CACHE_TTL_SECONDS", "90"))
+    sportsdb_enable_league_name_fallback: bool = _env_bool("SPORTSDB_ENABLE_LEAGUE_NAME_FALLBACK", "false")
+    sportsdb_enable_nextleague_fallback: bool = _env_bool("SPORTSDB_ENABLE_NEXTLEAGUE_FALLBACK", "true")
+    sportsdb_max_fallback_calls_per_10min: int = int(os.getenv("SPORTSDB_MAX_FALLBACK_CALLS_PER_10MIN", "3"))
+    basketball_prefetch_days: int = int(os.getenv("BASKETBALL_PREFETCH_DAYS", "8"))
+
     football_api_key: str = os.getenv("FOOTBALL_API_KEY", "")
     football_api_base_url: str = os.getenv(
         "FOOTBALL_API_BASE_URL",

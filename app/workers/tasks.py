@@ -30,7 +30,7 @@ def run_scheduler_tick_task(self, job_name: str) -> str:
 
 
 
-@celery_app.task(bind=True, autoretry_for=(Exception,), retry_backoff=True, retry_kwargs={"max_retries": 1}, soft_time_limit=240, time_limit=300)
+@celery_app.task(bind=True, autoretry_for=(Exception,), retry_backoff=True, retry_kwargs={"max_retries": 1}, soft_time_limit=540, time_limit=600, rate_limit="1/m")
 def send_basketball_ranking_task(self) -> dict:
     """Executa envio do ranking de basquete fora do request HTTP."""
     return job_send_basketball_daily_summary()
