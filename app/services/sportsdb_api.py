@@ -20,8 +20,9 @@ class SportsDBAPI:
         self.table_cache_ttl_seconds = 600
         self.team_form_cache_ttl_seconds = 300
 
-        self.min_interval_between_requests_seconds = 1.2
-        self.cooldown_on_429_seconds = 20.0
+        self.min_interval_between_requests_seconds = 0.6
+        self.cooldown_on_429_seconds = 10.0
+        self.request_timeout_seconds = 8
 
     def _build_cache_key(self, endpoint: str, params: Optional[dict]) -> Tuple[str, tuple]:
         if not params:
@@ -147,8 +148,8 @@ class SportsDBAPI:
         self,
         endpoint: str,
         params: Optional[dict] = None,
-        retries: int = 2,
-        retry_delay: float = 2.0,
+        retries: int = 1,
+        retry_delay: float = 1.0,
         use_cache: bool = True,
     ) -> Dict[str, Any]:
         url = f"{self.base_url}/{self.api_key}/{endpoint.lstrip('/')}"
@@ -165,7 +166,7 @@ class SportsDBAPI:
             try:
                 self._respect_global_rate_limit()
 
-                response = requests.get(url, params=params or {}, timeout=30)
+                response = requests.get(url, params=params or {}, timeout=self.request_timeout_seconds)
 
                 if response.status_code == 429:
                     body_preview = response.text[:300]

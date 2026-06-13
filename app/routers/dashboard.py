@@ -6,7 +6,7 @@ from collections import Counter, defaultdict
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
-from sqlalchemy import func, case, desc, and_
+from sqlalchemy import func, case, desc, and_, or_
 
 from app.config import settings
 from app.db import get_db
@@ -926,24 +926,98 @@ def list_opportunities(
     }
 
 
+def _prediction_to_daily_ranking_item(prediction: Prediction) -> dict:
+    """Serializa previsão já persistida para o ranking do dia.
+
+    Importante: dashboard não deve consultar TheSportsDB nem reprocessar análise.
+    Esse endpoint precisa ser rápido e auditável, lendo somente o banco.
+    """
+    item = _serialize_prediction(prediction)
+
+    features = {}
+    try:
+        features = json.loads(prediction.features_json or "{}")
+        if not isinstance(features, dict):
+            features = {}
+    except Exception:
+        features = {}
+
+    # Campos usados pela tela de ranking de futebol.
+    item["primary_1x2_pick"] = prediction.main_market_pick or prediction.pick
+    item["primary_1x2_probability"] = _safe_float(prediction.main_market_probability) or _prediction_probability(prediction)
+    item["safe_pick"] = prediction.double_chance_pick
+    item["safe_probability"] = _safe_float(prediction.double_chance_probability)
+    item["safe_market_label"] = "Dupla hipótese" if prediction.double_chance_pick else None
+    item["market_label"] = "Vencedor" if str(prediction.market_type or "").lower() == "winner" else prediction.market_type
+
+    # Campos usados pela tela de basquete, gravados dentro do features_json.
+    item["total_points_line"] = features.get("total_points_line")
+    item["total_points_pick"] = features.get("total_points_pick")
+    item["total_points_probability"] = features.get("total_points_probability")
+    if item.get("total_points_pick") and item.get("total_points_line") is not None:
+        label = "Mais" if str(item["total_points_pick"]).upper() == "OVER" else "Menos"
+        item["total_points_label"] = f"{label} de {item['total_points_line']} pontos"
+    else:
+        item["total_points_label"] = None
+
+    item["signal_score"] = features.get("signal_score") or None
+    item["signal_grade"] = features.get("signal_grade") or None
+    item["ranking_score"] = _opportunity_score(prediction)
+    return item
+
+
+def _query_daily_ranking_rows(db: Session, date: str | None, selected_sport: str, limit: int) -> tuple[list[Prediction], int]:
+    tz = ZoneInfo(settings.timezone)
+    target_date = date or datetime.now(tz).strftime("%Y-%m-%d")
+
+    query = db.query(Prediction).filter(Prediction.match_date == target_date)
+
+    basketball_filter = or_(
+        Prediction.league_key.ilike("basketball_%"),
+        Prediction.features_json.ilike('%"sport": "basketball"%'),
+        Prediction.features_json.ilike('%"sport":"basketball"%'),
+    )
+    soccer_filter = and_(
+        or_(Prediction.league_key.is_(None), ~Prediction.league_key.ilike("basketball_%")),
+        or_(
+            Prediction.features_json.is_(None),
+            and_(
+                ~Prediction.features_json.ilike('%"sport": "basketball"%'),
+                ~Prediction.features_json.ilike('%"sport":"basketball"%'),
+            ),
+        ),
+    )
+
+    if selected_sport in {"basketball", "basquete"}:
+        query = query.filter(basketball_filter)
+    elif selected_sport not in {"all", "todos"}:
+        query = query.filter(soccer_filter)
+
+    total = query.count()
+    rows = (
+        query.order_by(
+            desc(Prediction.best_probability),
+            desc(Prediction.main_market_probability),
+            desc(Prediction.created_at),
+        )
+        .limit(limit)
+        .all()
+    )
+    return rows, total
+
+
 @router.get("/daily-ranking")
 def daily_ranking(
+    db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
     date: str | None = Query(default=None),
     limit: int = Query(default=50, le=100),
     sport: str = Query(default="soccer"),
 ):
-    service = DailyLeaguesService()
     selected_sport = str(sport or "soccer").strip().lower()
-    if selected_sport in {"basketball", "basquete"}:
-        payloads = service.get_basketball_all_day_payloads(date)
-    elif selected_sport in {"all", "todos"}:
-        payloads = service.analysis_service.sort_by_best_picks(
-            service.get_all_day_payloads(date) + service.get_basketball_all_day_payloads(date)
-        )
-    else:
-        payloads = service.get_all_day_payloads(date)
-    items = [_payload_to_dashboard_item(payload) for payload in payloads[:limit]]
+
+    rows, total = _query_daily_ranking_rows(db, date, selected_sport, limit)
+    items = [_prediction_to_daily_ranking_item(row) for row in rows]
 
     by_turn = Counter(_turn_from_time(item.get("match_time")) for item in items)
     by_market = Counter(str(item.get("market_type") or "1x2") for item in items)
@@ -953,9 +1027,10 @@ def daily_ranking(
 
     return {
         "items": items,
-        "total": len(payloads),
+        "total": total,
         "returned": len(items),
         "generated_at": datetime.now(ZoneInfo(settings.timezone)).isoformat(),
+        "source": "database",
         "diagnostics": {
             "by_turn": dict(by_turn),
             "by_market": dict(by_market),
@@ -970,11 +1045,13 @@ def daily_ranking(
 
 @router.get("/basketball/daily-ranking")
 def basketball_daily_ranking(
+    db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
     date: str | None = Query(default=None),
     limit: int = Query(default=50, le=100),
 ):
     return daily_ranking(
+        db=db,
         current_user=current_user,
         date=date,
         limit=limit,
