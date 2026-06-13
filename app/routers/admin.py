@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 
 from app.deps import get_current_user
 from app.services.scheduler_service import (
@@ -12,6 +12,7 @@ from app.services.scheduler_service import (
     run_today_audit,
 )
 from app.services.post_deploy_sync_service import PostDeploySyncService
+from app.workers.tasks import send_basketball_ranking_task, send_daily_ranking_task
 
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -37,11 +38,17 @@ def run_pre_game_check(current_user=Depends(get_current_user)):
 
 @router.post("/send-daily-ranking")
 def send_daily_ranking(current_user=Depends(get_current_user)):
-    result = job_send_daily_top_summary()
+    """Dispara ranking diário em background para não travar a dashboard/API."""
+    try:
+        task = send_daily_ranking_task.delay()
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Fila indisponível para processar ranking diário: {exc}")
+
     return {
-        "success": bool(result.get("ok")),
-        "message": "Ranking diário processado.",
-        "result": result,
+        "success": True,
+        "queued": True,
+        "task_id": task.id,
+        "message": "Ranking diário enfileirado. Acompanhe os logs do worker-analysis.",
     }
 
 
@@ -49,11 +56,17 @@ def send_daily_ranking(current_user=Depends(get_current_user)):
 
 @router.post("/send-basketball-ranking")
 def send_basketball_ranking(current_user=Depends(get_current_user)):
-    result = job_send_basketball_daily_summary()
+    """Dispara ranking de basquete em background para não travar a dashboard/API."""
+    try:
+        task = send_basketball_ranking_task.delay()
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Fila indisponível para processar ranking de basquete: {exc}")
+
     return {
-        "success": bool(result.get("ok")),
-        "message": "Ranking diário de basquete processado.",
-        "result": result,
+        "success": True,
+        "queued": True,
+        "task_id": task.id,
+        "message": "Ranking de basquete enfileirado. Acompanhe os logs do worker-analysis.",
     }
 
 

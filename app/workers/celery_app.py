@@ -21,5 +21,7 @@ celery_app.conf.update(
         "app.workers.tasks.analyze_match_task": {"queue": "analysis"},
         "app.workers.tasks.send_telegram_task": {"queue": "telegram"},
         "app.workers.tasks.run_scheduler_tick_task": {"queue": "scheduler"},
+        "app.workers.tasks.send_basketball_ranking_task": {"queue": "analysis"},
+        "app.workers.tasks.send_daily_ranking_task": {"queue": "analysis"},
     },
 )
